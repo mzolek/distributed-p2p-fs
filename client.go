@@ -4,6 +4,7 @@ package main
 
 import (
     "fmt"
+    "os"
     "log"
     "bytes"
     "io"
@@ -120,15 +121,23 @@ func getAddressesOfPeer(name string) []string {
 // MAIN.
 
 func main() {
+    if len(os.Args) != 2 {
+        fmt.Println("usage: ", os.Args[0] + " <name>")
+        os.Exit(1)
+    }
+
+    name := os.Args[1]
     cryptoKeys := genCryptoKeys()
+
     // Example of usage.
+    fmt.Println(name)
     names := getPeers()
     fmt.Println(names)
     key := getKeyOfPeer(names[0])
     fmt.Println(len(key)) // 64
     addresses := getAddressesOfPeer(names[0])
     fmt.Println(addresses[0])
-    registerPeer("abc", formatPublicKey(cryptoKeys.publicKey))
+    registerPeer(name, formatPublicKey(cryptoKeys.publicKey))
     names = getPeers()
     fmt.Println(names) // Still the same, because Hello, HelloReply is needed to register name.
 }

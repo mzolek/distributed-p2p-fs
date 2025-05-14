@@ -1,0 +1,1 @@
+W projekcie nie mozemy używać connected socket (Dial) -> bo tylko możemy wtedy rozmawiac z jedym klientem

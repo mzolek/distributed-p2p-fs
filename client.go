@@ -70,12 +70,10 @@ func getPeers() []string {
 // Makes PUT request with peer's public key (64 bytes) to register the peer.
 func registerPeer(name string, key []byte) {
 	fmt.Println("name: ", name)
-	resp, err := http.NewRequest(http.MethodPut, Server+"/peers/"+name+"/key", bytes.NewBuffer(key))
-	// body, err := resp.GetBody()
-	// fmt.Println("body: ", body)
-	// message, err := io.ReadAll(resp.Body)
-	// fmt.Println("message: ", string(message))
-	// resp, err := http.Post(Server+"/peers/"+name+"/key", "application/octet-stream", bytes.NewBuffer(key))
+	req, err := http.NewRequest(http.MethodPut, Server+"/peers/"+name+"/key", bytes.NewBuffer(key))
+	failOnErr(err)
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	failOnErr(err)
 	defer resp.Body.Close()
 }

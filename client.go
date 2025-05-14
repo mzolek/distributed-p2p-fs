@@ -69,7 +69,13 @@ func getPeers() []string {
 // 3.2
 // Makes PUT request with peer's public key (64 bytes) to register the peer.
 func registerPeer(name string, key []byte) {
-	resp, err := http.Post(Server+"/peers/"+name+"/key", "application/octet-stream", bytes.NewBuffer(key))
+	fmt.Println("name: ", name)
+	resp, err := http.NewRequest(http.MethodPut, Server+"/peers/"+name+"/key", bytes.NewBuffer(key))
+	// body, err := resp.GetBody()
+	// fmt.Println("body: ", body)
+	// message, err := io.ReadAll(resp.Body)
+	// fmt.Println("message: ", string(message))
+	// resp, err := http.Post(Server+"/peers/"+name+"/key", "application/octet-stream", bytes.NewBuffer(key))
 	failOnErr(err)
 	defer resp.Body.Close()
 }
@@ -100,34 +106,47 @@ func getAddressesOfPeer(name string) []string {
 	return addresses
 }
 
-func registerIp(name string, sig []byte) {
+func registerIp(name string, privateKey *ecdsa.PrivateKey) {
+
+	fmt.Println("name: ", name)
+	fmt.Println("name: ", []byte(name))
+	fmt.Println("name: ", string([]byte(name)))
 
 	id := uint32(2137)
-	extensions := make([]byte, 0, 4)
-	message := createHelloMessage(id, Hello, extensions, []byte(name), sig)
+	extensions := make([]byte, 4)
+	fmt.Println("extensions: ", len(extensions))
+	helloMessage := createHelloMessage(id, Hello, extensions, []byte(name), privateKey)
 
 	addresses := getAddressesOfPeer("galene.org")
-	serverAddr := fmt.Sprintf("%s:%d", addresses, Port)
-	udpAddr, err := net.ResolveUDPAddr("udp", serverAddr)
+
+	// TODO check
+	udpAddr, err := net.ResolveUDPAddr("udp", addresses[0])
 	failOnErr(err)
-	localAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:0")
-	failOnErr(err)
-	conn, err := net.DialUDP("udp", localAddr, udpAddr)
+
+	conn, err := net.DialUDP("udp", nil, udpAddr)
 	failOnErr(err)
 	defer conn.Close()
 
 	timeout := time.Duration(5 * float64(time.Second))
 	conn.SetReadDeadline(time.Now().Add(timeout))
 
-	_, err = conn.Write(message)
+	_, err = conn.Write(helloMessage)
 	failOnErr(err)
 
 	buffer := make([]byte, 1024)
 	_, err = conn.Read(buffer)
-	messageReply, err := parseHelloMessage(buffer)
+	hello, err := parseHelloMessage(buffer)
+	printMessage(hello.BaseMessage)
+
 	failOnErr(err)
-	err = validateMessage(id, sig, messageReply.BaseMessage)
+	// err = validateMessage(id, sig, messageReply.BaseMessage)
 	failOnErr(err)
+
+	helloReply := createHelloMessage(hello.ID, HelloReply, hello.Extensions, hello.Name, privateKey)
+
+	_, err = conn.Write(helloReply)
+	failOnErr(err)
+
 }
 
 // MAIN.
@@ -145,11 +164,11 @@ func main() {
 	names := getPeers()
 	fmt.Println(names)
 	key := getKeyOfPeer(names[0])
-	fmt.Println(len(key)) // 64
+	fmt.Println("keyLength", len(key)) // 64
 	addresses := getAddressesOfPeer(names[0])
 	fmt.Println(addresses[0])
 	registerPeer(name, formatPublicKey(cryptoKeys.publicKey))
-	registerIp(name, cryptoKeys.privateKey.D.Bytes())
+	registerIp(name, cryptoKeys.privateKey)
 	names = getPeers()
 	fmt.Println(names) // Still the same, because Hello, HelloReply is needed to register name.
 }

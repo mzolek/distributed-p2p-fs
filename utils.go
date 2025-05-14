@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 )
 
 type MessageType uint8
@@ -44,6 +48,16 @@ func failOnErr(err error) {
 	}
 }
 
+func printMessage(message BaseMessage) {
+	fmt.Println("-------------------------------")
+	fmt.Println("ID: ", message.ID)
+	fmt.Println("Type: ", message.Type)
+	fmt.Println("Length: ", message.Length)
+	fmt.Println("Payload: ", string(message.Payload))
+	// fmt.Println("Sig: ", message.Sig)
+	fmt.Println("-------------------------------")
+}
+
 func parseMessage(data []byte) (BaseMessage, error) {
 	if len(data) < 7 {
 		return BaseMessage{}, errors.New("data too short")
@@ -52,16 +66,14 @@ func parseMessage(data []byte) (BaseMessage, error) {
 	id := binary.BigEndian.Uint32(data[0:4])
 	typ := MessageType(data[4])
 	length := binary.BigEndian.Uint16(data[5:7])
-	fmt.Println("length: ", length)
 	bodyEnd := 7 + length
-	fmt.Println("bodyEnd: ", bodyEnd)
 
 	if int(bodyEnd) > len(data) {
 		return BaseMessage{}, errors.New("declared length exceeds actual data size")
 	}
 
 	payload := data[7:bodyEnd]
-	sig := data[bodyEnd : bodyEnd+4]
+	sig := data[bodyEnd:]
 
 	base := BaseMessage{
 		ID:      id,
@@ -70,7 +82,6 @@ func parseMessage(data []byte) (BaseMessage, error) {
 		Payload: payload,
 		Sig:     sig,
 	}
-	fmt.Println("base: ", base)
 	return base, nil
 }
 
@@ -80,11 +91,19 @@ func parseHelloMessage(data []byte) (HelloMessage, error) {
 	failOnErr(err)
 
 	if baseMessage.Type != Hello && baseMessage.Type != HelloReply {
-		return HelloMessage{}, errors.New("Expected Hello or HelloReply message type")
+		return HelloMessage{
+			BaseMessage: baseMessage,
+			Name:        nil,
+			Extensions:  nil,
+		}, errors.New("Expected Hello or HelloReply message type")
 	}
 
 	if len(baseMessage.Payload) < 4 {
-		return HelloMessage{}, errors.New("payload too short for HelloMessage")
+		return HelloMessage{
+			BaseMessage: baseMessage,
+			Name:        nil,
+			Extensions:  nil,
+		}, errors.New("payload too short for HelloMessage")
 	}
 
 	fmt.Println("baseMessage: ", baseMessage)
@@ -98,9 +117,9 @@ func parseHelloMessage(data []byte) (HelloMessage, error) {
 	return helloMessage, nil
 }
 
-func createHelloMessage(id uint32, typ MessageType, extensions []byte, name []byte, sig []byte) []byte {
+func createHelloMessage(id uint32, typ MessageType, extensions []byte, name []byte, privateKey *ecdsa.PrivateKey) []byte {
 
-	payload := make([]byte, 0, 7+len(extensions)+len(name)+len(sig))
+	payload := make([]byte, 0)
 
 	header := make([]byte, 7)
 	binary.BigEndian.PutUint32(header[0:4], id)
@@ -110,10 +129,16 @@ func createHelloMessage(id uint32, typ MessageType, extensions []byte, name []by
 	binary.BigEndian.PutUint16(header[5:7], length)
 
 	payload = append(payload, header...)
+
 	payload = append(payload, extensions...)
 	payload = append(payload, name...)
-	payload = append(payload, sig...)
+	fmt.Println("payload: ", payload)
 
+	// payload = append(payload, sig...)
+	sig, err := computeSignature(payload, privateKey)
+	failOnErr(err)
+	payload = append(payload, sig...)
+	// fmt.Println("sig: ", len(sig))
 	return payload
 }
 
@@ -122,4 +147,21 @@ func validateMessage(id uint32, sig []byte, message BaseMessage) error {
 		return errors.New("Not a valid message")
 	}
 	return nil
+}
+
+func computeSignature(data []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
+	hashed := sha256.Sum256(data)
+	r, s, err := ecdsa.Sign(rand.Reader, privateKey, hashed[:])
+	signature := make([]byte, 64)
+	r.FillBytes(signature[:32])
+	s.FillBytes(signature[32:])
+	return signature, err
+}
+
+func verifySignature(publicKey *ecdsa.PublicKey, data []byte, signature []byte) bool {
+	var r, s big.Int
+	r.SetBytes(signature[:32])
+	s.SetBytes(signature[32:])
+	hashed := sha256.Sum256(data)
+	return ecdsa.Verify(publicKey, hashed[:], &r, &s)
 }

@@ -30,6 +30,8 @@ type CryptoKeys struct {
 const Server = "https://galene.org:8448"
 const Port = 8448
 
+const LocalPort = 2626
+
 // Types of message in peer-to-peer protocol.
 
 // Generates new random private key and generates public key from it.
@@ -49,6 +51,14 @@ func formatPublicKey(publicKey *ecdsa.PublicKey) []byte {
 	return formatted
 }
 
+func bytesToPublicKey(key []byte) *ecdsa.PublicKey {
+	publicKey := new(ecdsa.PublicKey)
+	publicKey.Curve = elliptic.P256()
+	publicKey.X.FillBytes(key[:32])
+	publicKey.Y.FillBytes(key[32:])
+	return publicKey
+}
+
 // CLIENT-SERVER PROTOCOL.
 
 // 3.1
@@ -61,7 +71,9 @@ func getPeers() []string {
 	failOnErr(err)
 	names := make([]string, 0)
 	for _, line := range bytes.Split(body, []byte("\n")) {
-		names = append(names, string(line))
+		if len(line) != 0 {
+			names = append(names, string(line))
+		}
 	}
 	return names
 }
@@ -99,48 +111,68 @@ func getAddressesOfPeer(name string) []string {
 	failOnErr(err)
 	addresses := make([]string, 0)
 	for _, line := range bytes.Split(body, []byte("\n")) {
-		addresses = append(addresses, string(line))
+		if len(line) != 0 {
+			addresses = append(addresses, string(line))
+		}
 	}
 	return addresses
 }
 
-func registerIp(name string, privateKey *ecdsa.PrivateKey) {
-
-	fmt.Println("name: ", name)
-	fmt.Println("name: ", []byte(name))
-	fmt.Println("name: ", string([]byte(name)))
+func registerIP(name string, privateKey *ecdsa.PrivateKey) {
 
 	id := uint32(2137)
 	extensions := make([]byte, 4)
-	fmt.Println("extensions: ", len(extensions))
-	helloMessage := createHelloMessage(id, Hello, extensions, []byte(name), privateKey)
+
+	helloMessage, err := createHelloMessage(id, Hello, extensions, []byte(name), privateKey)
+	failOnErr(err)
 
 	addresses := getAddressesOfPeer("galene.org")
 
-	// TODO check
 	udpAddr, err := net.ResolveUDPAddr("udp", addresses[0])
 	failOnErr(err)
 
-	conn, err := net.DialUDP("udp", nil, udpAddr)
+	localAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", LocalPort))
+	failOnErr(err)
+	conn, err := net.DialUDP("udp", localAddr, udpAddr)
 	failOnErr(err)
 	defer conn.Close()
 
-	timeout := time.Duration(5 * float64(time.Second))
+	timeout := time.Duration(10 * float64(time.Second))
 	conn.SetReadDeadline(time.Now().Add(timeout))
 
 	_, err = conn.Write(helloMessage)
 	failOnErr(err)
 
 	buffer := make([]byte, 1024)
-	_, err = conn.Read(buffer)
-	hello, err := parseHelloMessage(buffer)
-	printMessage(hello.BaseMessage)
+	conn.Read(buffer)
+	fmt.Println("buffer ", buffer)
+	// buffer, err := io.ReadAll(conn)
+	// failOnErr(err)
 
-	failOnErr(err)
-	// err = validateMessage(id, sig, messageReply.BaseMessage)
-	failOnErr(err)
+	helloReplyServer, err := parseHelloMessage(buffer)
+	if err != nil {
+		fmt.Println("Error parsing hello message: ", err)
+		return
+	}
+	fmt.Println("buffer ", buffer)
+	printHelloMessage(helloReplyServer, "helloReplyServer")
 
-	helloReply := createHelloMessage(hello.ID, HelloReply, hello.Extensions, hello.Name, privateKey)
+	buffer = make([]byte, 1024)
+	conn.Read(buffer)
+	// buffer, err = io.ReadAll(conn)
+	helloFromServer, err := parseHelloMessage(buffer)
+	fmt.Println("buffer ", buffer)
+	printHelloMessage(helloFromServer, "helloFromServer")
+
+	// verify signature
+	// serverKey := getKeyOfPeer("galene.org")
+	// key := bytesToPublicKey(serverKey)
+
+	helloReply, err := createHelloMessage(helloFromServer.ID, HelloReply, extensions, []byte(name), privateKey)
+	fmt.Println("helloReply ", helloReply[:71])
+
+	parseHelloReplay, _ := parseHelloMessage(helloReply)
+	printHelloMessage(parseHelloReplay, "parseHelloReplay")
 
 	_, err = conn.Write(helloReply)
 	failOnErr(err)
@@ -155,18 +187,18 @@ func main() {
 		os.Exit(1)
 	}
 	name := os.Args[1]
-	cryptoKeys := genCryptoKeys()
 
 	// Example of usage.
 	fmt.Println(name)
 	names := getPeers()
 	fmt.Println(names)
-	key := getKeyOfPeer(names[0])
-	fmt.Println("keyLength", len(key)) // 64
-	addresses := getAddressesOfPeer(names[0])
-	fmt.Println(addresses[0])
-	registerPeer(name, formatPublicKey(cryptoKeys.publicKey))
-	registerIp(name, cryptoKeys.privateKey)
+	addresses := getAddressesOfPeer("ZZ")
+	fmt.Println("addresses", addresses)
+
+	// cryptoKeys := genCryptoKeys()
+	// registerPeer(name, formatPublicKey(cryptoKeys.publicKey))
+	// registerIP(name, cryptoKeys.privateKey)
+
 	names = getPeers()
 	fmt.Println(names) // Still the same, because Hello, HelloReply is needed to register name.
 }

@@ -189,16 +189,17 @@ func main() {
 	name := os.Args[1]
 
 	// Example of usage.
-	fmt.Println(name)
+	fmt.Println("My name: ", name)
 	names := getPeers()
-	fmt.Println(names)
-	addresses := getAddressesOfPeer("ZZ")
-	fmt.Println("addresses", addresses)
+	fmt.Println("All peers before registration by HTTPS: ", names)
+	addresses := getAddressesOfPeer(name)
+	fmt.Println("My addresses known by server before registraton by UDP: ", addresses)
 
-	// cryptoKeys := genCryptoKeys()
-	// registerPeer(name, formatPublicKey(cryptoKeys.publicKey))
-	// registerIP(name, cryptoKeys.privateKey)
-
+	cryptoKeys := genCryptoKeys()
+	registerPeer(name, formatPublicKey(cryptoKeys.publicKey))
 	names = getPeers()
-	fmt.Println(names) // Still the same, because Hello, HelloReply is needed to register name.
+	fmt.Println("All peers after registration by HTTPS ", names)
+
+	registerIP(name, cryptoKeys.privateKey)
+	fmt.Println("My addresses known by server after registration by UDP: ", getAddressesOfPeer(name))
 }

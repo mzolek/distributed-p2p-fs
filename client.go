@@ -201,5 +201,6 @@ func main() {
 	fmt.Println("All peers after registration by HTTPS ", names)
 
 	registerIP(name, cryptoKeys.privateKey)
+	time.Sleep(1 * time.Second)
 	fmt.Println("My addresses known by server after registration by UDP: ", getAddressesOfPeer(name))
 }

@@ -4,3 +4,8 @@ W projekcie nie mozemy używać connected socket (Dial) -> bo tylko możemy wted
 Jak robie liscient UDP to podaje adres lokalny jak nie podam to jest to robione automatycznie
 
 to gdzie wysylam paiety decyduje przy kazdym zadaniu uzywajac write to
+
+
+Teraz uruchomienie to:
+
+go run client.go utils.go name port

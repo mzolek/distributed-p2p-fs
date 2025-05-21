@@ -1,15 +1,23 @@
+// Authors: Krzysztof Żyndul, Marcin Żołek
+
 package main
 
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/elliptic"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
 	"math/big"
 )
+
+type CryptoKeys struct {
+	PrivateKey *ecdsa.PrivateKey
+	PublicKey  *ecdsa.PublicKey
+}
 
 type MessageType uint8
 
@@ -26,135 +34,186 @@ const (
 	NoDatum      MessageType = 133
 )
 
-type BaseMessage struct {
-	ID      uint32
-	Type    MessageType
-	Length  uint16
-	Payload []byte
-	Sig     []byte
+const HeaderLength = 7 // Header is ID, Type, Length.
+
+type Message struct {
+	ID          uint32
+	Type        MessageType
+	Length      uint16
+	Body        []byte
+	Signed      bool // If Signed is true then Signature has length 32.
+	Signature   []byte
 }
 
-type HelloMessage struct {
-	BaseMessage
-	Extensions []byte
-	Name       []byte
-}
-
-// UTILS.
 func failOnErr(err error) {
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-func printMessage(message BaseMessage, name string) {
-	fmt.Println("Message from: ", name)
+func printMessage(message Message, name string) {
+	fmt.Println("Message: ", name)
 	fmt.Println("-------------------------------")
 	fmt.Println("ID: ", message.ID)
 	fmt.Println("Type: ", message.Type)
 	fmt.Println("Length: ", message.Length)
-	fmt.Println("Payload: ", message.Payload)
+	fmt.Println("Body: ", string(message.Body))
 	fmt.Println("-------------------------------")
 	fmt.Println()
 }
 
-func printHelloMessage(message HelloMessage, name string) {
-	fmt.Println("Message from: ", name)
-	fmt.Println("-------------------------------")
-	fmt.Println("ID: ", message.ID)
-	fmt.Println("Type: ", message.Type)
-	fmt.Println("Length: ", message.Length)
-	fmt.Println("Extensions: ", message.Extensions)
-	fmt.Println("Name: ", message.Name)
-	fmt.Println("-------------------------------")
-	fmt.Println()
+func getExtensions(message Message) []byte {
+	if len(message.Body) >= 4 {
+		return message.Body[:4]
+	}
+
+	return nil
 }
 
-func parseMessage(data []byte) (BaseMessage, error) {
-	headerLength := 7
-	if len(data) < headerLength {
-		return BaseMessage{}, errors.New("Wrong message format. Message too short")
+func getName(message Message) []byte {
+	if len(message.Body) >= 4 {
+		return message.Body[4:]
+	}
+
+	return nil
+}
+
+func parseMessage(data []byte) (Message, error) {
+	if len(data) < HeaderLength {
+		return Message{}, errors.New("Message too short.")
 	}
 
 	id := binary.BigEndian.Uint32(data[0:4])
 	typ := MessageType(data[4])
 	length := int(binary.BigEndian.Uint16(data[5:7]))
-	bodyEnd := headerLength + length
+	bodyEnd := HeaderLength + length
 
 	if bodyEnd > len(data) {
-		return BaseMessage{}, errors.New("Declared length exceeds actual data size")
+		return Message{}, errors.New("Declared length exceeds data size.")
 	}
 
-	payload := data[headerLength:bodyEnd]
-	sig := data[bodyEnd : bodyEnd+32]
-
-	base := BaseMessage{
-		ID:      id,
-		Type:    typ,
-		Length:  uint16(length),
-		Payload: payload,
-		Sig:     sig,
-	}
-	return base, nil
-}
-
-func parseHelloMessage(data []byte) (HelloMessage, error) {
-
-	baseMessage, err := parseMessage(data)
-
-	if err != nil {
-		return HelloMessage{}, err
+	if (typ == Hello || typ == HelloReply) && length < 4 {
+		return Message{}, errors.New("Body too short.")
 	}
 
-	if baseMessage.Type != Hello && baseMessage.Type != HelloReply {
-		if baseMessage.Type == Error {
-			return HelloMessage{}, errors.New("Error message received: " + string(baseMessage.Payload))
+	body := data[HeaderLength:bodyEnd]
+
+	var signed bool
+    var signature []byte
+
+	if typ == Hello || typ == HelloReply || typ == Datum {
+		if bodyEnd + 32 > len(data) {
+			return Message{}, errors.New("Missing signature.")
 		}
-		return HelloMessage{}, errors.New("Wrong message type. Expected Hello or HelloReply got" + string(baseMessage.Type))
-	}
-	// 4 bytes for extensions and at least 1 byte for name
-	if len(baseMessage.Payload) < 5 {
-		return HelloMessage{}, errors.New("Payload too short for Hello messages")
+
+		signed = true
+		signature = data[bodyEnd:(bodyEnd + 32)]
+	} else {
+		signed = false
+		signature = nil
 	}
 
-	helloMessage := HelloMessage{
-		BaseMessage: baseMessage,
-		Extensions:  baseMessage.Payload[0:4],
-		Name:        baseMessage.Payload[4:],
+	message := Message{
+		ID:        id,
+		Type:      typ,
+		Length:    uint16(length),
+		Body:      body,
+		Signed:    signed,
+		Signature: signature,
 	}
-	return helloMessage, nil
+
+	return message, nil
 }
 
-func createMessage(id uint32, typ MessageType, payload []byte) []byte {
-	header := make([]byte, 7)
-	binary.BigEndian.PutUint32(header[0:4], id)
-	header[4] = byte(typ)
+func messageToBytes(message Message) []byte {
+	header := make([]byte, HeaderLength)
+	binary.BigEndian.PutUint32(header[0:4], message.ID)
+	header[4] = byte(message.Type)
 
-	length := uint16(len(payload))
+	length := uint16(len(message.Body))
 	binary.BigEndian.PutUint16(header[5:7], length)
 
-	message := make([]byte, 0)
-	message = append(message, header...)
-	message = append(message, payload...)
+	data := make([]byte, 0)
+	data = append(data, header...)
+	data = append(data, message.Body...)
 
-	return message
+	if message.Signed {
+		data = append(data, message.Signature...)
+	}
+
+	return data
 }
 
-func createHelloMessage(id uint32, typ MessageType, extensions []byte, name []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
+func createPingBytes(id uint32, typ MessageType) []byte {
+	data := messageToBytes(Message{
+		ID:        id,
+		Type:      typ,
+		Length:    0,
+		Body:      make([]byte, 0),
+		Signed:    false,
+		Signature: nil,
+	})
 
-	payload := make([]byte, 0)
-	payload = append(payload, extensions...)
-	payload = append(payload, name...)
+	return data
+}
 
-	message := createMessage(id, typ, payload)
+func createHelloBytes(id uint32, typ MessageType, extensions []byte, name []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
+	body := make([]byte, 0)
+	body = append(body, extensions...)
+	body = append(body, name...)
 
-	sig, err := computeSignature(message, privateKey)
+	data := messageToBytes(Message{
+		ID:        id,
+		Type:      typ,
+		Length:    uint16(len(body)),
+		Body:      body,
+		Signed:    false,
+		Signature: nil,
+	})
+
+	signature, err := computeSignature(data, privateKey)
+
 	if err != nil {
 		return nil, err
 	}
-	message = append(message, sig...)
 
-	return message, nil
+	data = append(data, signature...)
+
+	return data, nil
+}
+
+func checkHelloReplyMessage(message Message, id uint32, name string) bool {
+	if message.Type == HelloReply && message.ID == id && message.Length >= 4 && string(message.Body[4:]) == name {
+		return true
+	}
+	return false
+}
+
+// KEYS, SIGNATURES, ETC.
+
+// Generates new random private key and generates public key from it.
+// Returns custom struct CryptoKey.
+func genCryptoKeys() CryptoKeys {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	failOnErr(err)
+	publicKey := privateKey.Public().(*ecdsa.PublicKey)
+	return CryptoKeys{privateKey, publicKey}
+}
+
+// Convert public key to bytes so that it can be sent.
+func formatPublicKey(publicKey *ecdsa.PublicKey) []byte {
+	formatted := make([]byte, 64)
+	publicKey.X.FillBytes(formatted[:32])
+	publicKey.Y.FillBytes(formatted[32:])
+	return formatted
+}
+
+func bytesToPublicKey(key []byte) *ecdsa.PublicKey {
+	publicKey := new(ecdsa.PublicKey)
+	publicKey.Curve = elliptic.P256()
+	publicKey.X.FillBytes(key[:32])
+	publicKey.Y.FillBytes(key[32:])
+	return publicKey
 }
 
 func computeSignature(data []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {

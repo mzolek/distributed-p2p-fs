@@ -5,9 +5,9 @@ package main
 import (
 	"bytes"
 	"bufio"
-	"sync"
 	"slices"
-	"crypto/ecdsa"
+	"sync"
+	//"crypto/ecdsa"
 	"fmt"
 	"io"
 	"net"
@@ -28,7 +28,16 @@ const ServerPort = 8448
 
 type PeerInfo struct {
 	Name string
+	Addr *net.UDPAddr
+	Wg sync.WaitGroup
+	IsUniqueChan chan bool
 	HelloChan chan struct{}
+	RootChan chan []byte
+}
+
+type NetInfo struct {
+	Bytes []byte
+	Addr *net.UDPAddr
 }
 
 // CLIENT-SERVER PROTOCOL.
@@ -90,65 +99,40 @@ func getAddressesOfPeer(name string) []string {
 	return addresses
 }
 
-// Send Hello to server and receive HelloReply.
-// Hello from server is listened in main loop, not here, because it is the same as other Hello messages from other peers.
-func registerIP(conn *net.UDPConn, name string, privateKey *ecdsa.PrivateKey) {
-	// Server address.
-	addresses := getAddressesOfPeer(ServerName)
-	if len(addresses) == 0 {
-		log.Fatal("No server UDP address is available.")
-	}
-	serverAddr, err := net.ResolveUDPAddr("udp", addresses[0])
-	failOnErr(err)
-	// Create hello message.
-	id := rand.Uint32()
-	helloBytes, err := createHelloBytes(id, Hello, make([]byte, 4), []byte(name), privateKey)
-	failOnErr(err)
-	// Send Hello and receive HelloReply.
+func reader(conn *net.UDPConn, readChan chan NetInfo) {
 	buffer := make([]byte, 1024)
-	timeout := 5 * time.Second
-	maxRetries := 10
-	for i := 1; i <= maxRetries; i++ {
-		_, err = conn.WriteToUDP(helloBytes, serverAddr)
+
+	for {
+		n, addr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
+			fmt.Println("Read error:", err)
 			continue
 		}
-		conn.SetReadDeadline(time.Now().Add(timeout))
-		n, _, err := conn.ReadFromUDP(buffer)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Registration attempt %d/%d failed: %v\n", i, maxRetries, err)
-			continue
-		}
-
-		helloReplyMessage, err := parseMessage(buffer[:n])
-		if err != nil || !checkHelloReplyMessage(helloReplyMessage, id, ServerName) {
-			fmt.Fprintf(os.Stderr, "Registration attempt %d/%d failed:\n", i, maxRetries)
-			printMessage(helloReplyMessage, "HelloReply from server")
-			continue
-		}
-
-		printMessage(helloReplyMessage, "HelloReply from server")
-
-		return
+		fmt.Printf("Received from %s: %s\n", addr.String(), string(buffer[:n]))
+		readChan <- NetInfo{ buffer[:n], addr }
 	}
-
-	log.Fatal("Registration failed miserably")
 }
 
-func respondToHello(conn *net.UDPConn, peerName string, peerAddr *net.UDPAddr, message Message,
-					name string, cryptoKeys CryptoKeys, peers *sync.Map) {
+func writer(conn *net.UDPConn, writeChan chan NetInfo) {
+	for toSend := range writeChan {
+		conn.WriteToUDP(toSend.Bytes, toSend.Addr)
+	}
+}
+
+func respondToHello(writeChan chan NetInfo, peerName string, peerAddr *net.UDPAddr, message Message,
+					name string, cryptoKeys CryptoKeys) {
 	// TODO
 	// peerPublicKey := getKeyOfPeer(peerName)
 	// verify if message.Signature is correct with peerPublicKey.
 	// if yes then create and send HelloReply:
 	helloReplyBytes, err := createHelloBytes(message.ID, HelloReply, getExtensions(message), []byte(name), cryptoKeys.PrivateKey) // Using my name, not peer name in HelloReply.
 	if err == nil {
-		peers.Store(peerAddr.String(), &PeerInfo{Name: peerName, HelloChan: make(chan struct{})})
-		conn.WriteToUDP(helloReplyBytes, peerAddr) // Don't check errors or retransmit, because if HelloReply doesn't reach the peer, the peer will send Hello again.
+		writeChan <- NetInfo{helloReplyBytes, peerAddr} // Don't check errors or retransmit, because if HelloReply doesn't reach the peer, the peer will send Hello again.
 	}
 }
 
-func talkToPeer(conn *net.UDPConn, peerName string, name string, cryptoKeys CryptoKeys, peers *sync.Map) {
+func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommChan chan string,
+				peerName string, name string, cryptoKeys CryptoKeys) {
 	allPeers := getPeers()
 	if !slices.Contains(allPeers, peerName) { // Check if this peer exists.
 		fmt.Println("Peer", peerName, "does not exist.")
@@ -166,40 +150,71 @@ func talkToPeer(conn *net.UDPConn, peerName string, name string, cryptoKeys Cryp
 	}
 	fmt.Println(peerName, "has address:", peerAddr.String())
 
-	helloReplyBytes, err := createHelloBytes(42, Hello, make([]byte, 4), []byte(name), cryptoKeys.PrivateKey)
+	helloBytes, err := createHelloBytes(rand.Uint32(), Hello, make([]byte, 4), []byte(name), cryptoKeys.PrivateKey)
 	if err != nil {
 		fmt.Println("Can't create Hello to peer", peerName)
 		return
 	}
-	helloChan := make(chan struct{})
-	peers.Store(peerAddr.String(), &PeerInfo{Name: peerName, HelloChan: helloChan})
-	ticker := time.NewTicker(2 * time.Second)
 
+	isUniqueChan := make(chan bool)
+	helloChan := make(chan struct{})
+	rootChan := make(chan []byte)
+
+	peerInfoChan <- &PeerInfo{Name: peerName, Addr: peerAddr, IsUniqueChan: isUniqueChan, HelloChan: helloChan, RootChan: rootChan}
+	isUnique := <- isUniqueChan
+
+	if !isUnique {
+		fmt.Println("Communcation with", peerName, "is already being handled. Please be patient.")
+		return
+	}
+
+	helloTicker := time.NewTicker(2 * time.Second)
+helloLoop:
 	for {
 		select {
-		case <-ticker.C:
+		case <-helloTicker.C:
 			fmt.Println("Sending Hello to", peerName)
-			conn.WriteToUDP(helloReplyBytes, peerAddr)
+			writeChan <- NetInfo{helloBytes, peerAddr}
 		case <-helloChan:
-			ticker.Stop()
+			helloTicker.Stop()
 			fmt.Println("Got HelloReply from", peerName)
-			//TODO
-			fmt.Println("TODO: Further communication with", peerName)
-			// Trzeba zaznaczyć w zmiennej lokalnej, że helloReply zrobione i dodać kolejne case do select.
-			// Trzeba dalej odbierać w select <-helloChan i nic z tym nie robić, bo inaczej będą wycieki funkcji goroutine (wredny peer może nam w kóło wysyłać HelloReply i głowna pętla będzie w kółko tworzyć nowe goroutines, które będą wrzucać w kanał coś i się blokować).
-			// Po zakończeniu całej komunikacji z Peerem usuniemy peera z mapy peers (żeby pętla głowna nie tworzyła już nowych gorutines na HelloReply itp.)
-			// i osuszymy kanały (wyjmiemy z nich wszystko, żeby odblokować wszystkie wstrzymane gorutines).
-			// I to powinno zadziałać :-), aczkolwiek trochę skomplikowane.
+			break helloLoop
 		}
 	}
+
+	rootRequestBytes := createEmptyBodyBytes(rand.Uint32(), RootRequest, 32)
+
+	rootTicker := time.NewTicker(1 * time.Second)
+	var rootHash []byte
+rootLoop:
+	for {
+		select {
+		case <-rootTicker.C:
+			fmt.Println("Sending RootRequest to", peerName)
+			writeChan <- NetInfo{rootRequestBytes, peerAddr}
+		case rootHash = <-rootChan:
+			rootTicker.Stop()
+			fmt.Println("Got RootReply from", peerName)
+			break rootLoop
+		}
+	}
+
+	fmt.Println("Root hash is:", string(rootHash))
+
+	//TODO Datum etc.
+	fmt.Println("TODO: Further communication with", peerName)
+
+
+	// Epilog.
+	finishCommChan <- peerAddr.String()
 }
 
-func userInterface(conn *net.UDPConn, name string, cryptoKeys CryptoKeys, peers *sync.Map) {
+func userInterface(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommChan chan string, name string, cryptoKeys CryptoKeys) {
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		peerName := scanner.Text()
 		fmt.Println("User wants to talk to:", peerName)
-		go talkToPeer(conn, peerName, name, cryptoKeys, peers)
+		go talkToPeer(writeChan, peerInfoChan, finishCommChan, peerName, name, cryptoKeys)
 	}
 }
 
@@ -243,80 +258,103 @@ func main() {
 		log.Fatal("Failed to bind: ", err)
 	}
 	defer conn.Close()
-
-	registerIP(conn, name, cryptoKeys.PrivateKey)
-
 	fmt.Println("Listening on", addr.String())
 
-	buffer := make([]byte, 1024)
+	peersMap := make(map[string]*PeerInfo) // It is used only by main thread, so it does not have to be thread-safe.
 
-	var peers sync.Map // Thread-safe dictionary that contains keys: peer's addresses (as strings) and values: pointers to PeerInfo struct
+	readChan := make(chan NetInfo) // Channel to read from UDP.
+	writeChan := make(chan NetInfo) // Channel to write to UDP.
+	peerInfoChan := make(chan *PeerInfo) // Channel to inform main thread that we want to communcate with new peer.
+	finishCommChan := make(chan string) // Channel to signal to main thread that communication with peer has finished (all data received).
 
-	go userInterface(conn, name, cryptoKeys, &peers)
-
-	conn.SetReadDeadline(time.Time{}) // Infinite timeout for below ReadFromUDP.
+	go reader(conn, readChan)
+	go writer(conn, writeChan)
+	go userInterface(writeChan, peerInfoChan, finishCommChan, name, cryptoKeys)
 
 	for {
-		n, peerAddr, err := conn.ReadFromUDP(buffer)
-		if err != nil {
-			fmt.Println("Read error:", err)
-			continue
-		}
-		fmt.Printf("Received from %s: %s\n", peerAddr.String(), string(buffer[:n]))
+		select {
+		case peerInfo := <- peerInfoChan:
+			_, ok := peersMap[peerInfo.Addr.String()]
+			if ok {
+				go func() { peerInfo.IsUniqueChan <- false }() // If this peer is currently being processed by different goroutine then don't create new.
+			} else {
+				peersMap[peerInfo.Addr.String()] = peerInfo
+				go func() { peerInfo.IsUniqueChan <- true }()
+			}
+		case peerAddrStr := <- finishCommChan:
+			peerInfo := peersMap[peerAddrStr]
+			delete(peersMap, peerAddrStr)
 
-		message, err := parseMessage(buffer[:n])
+			go func() {
+				peerInfo.Wg.Wait()
+				close(peerInfo.HelloChan)
+				close(peerInfo.RootChan)
+				fmt.Println("Communication with", peerInfo.Name, "is done 1.")
+			}()
+			go func() {
+				for range peerInfo.HelloChan {}
+				fmt.Println("Communication with", peerInfo.Name, "is done 2.")
+			}()
+			go func() {
+				for range peerInfo.RootChan {}
+				fmt.Println("Communication with", peerInfo.Name, "is done 3.")
+			}()
+		case netInfo := <-readChan:
+			message, err := parseMessage(netInfo.Bytes)
+			peerAddr := netInfo.Addr
 
-		if err != nil {
-			fmt.Println("Unknown message.")
-			continue
-		}
+			if err != nil {
+				fmt.Println("Unknown message:", err)
+				continue
+			}
 
-		printMessage(message, "Message")
+			printMessage(message, "Message")
 
-		switch message.Type {
+			switch message.Type {
 			case Hello:
 				peerName := getName(message)
 				if peerName == nil {
 					fmt.Printf("No name peer")
 					continue
 				}
-				go respondToHello(conn, string(peerName), peerAddr, message, name, cryptoKeys, &peers)
+				go respondToHello(writeChan, string(peerName), peerAddr, message, name, cryptoKeys)
 			case HelloReply:
-				val, ok := peers.Load(peerAddr.String())
+				peerInfo, ok := peersMap[peerAddr.String()]
 				if ok {
-					peerInfo := val.(*PeerInfo)
-					go func() { peerInfo.HelloChan <- struct{}{} }() // Send through channel that we got HelloReply.
+					peerInfo.Wg.Add(1)
+					go func() {
+						defer peerInfo.Wg.Done()
+						peerInfo.HelloChan <- struct{}{} // Send through channel that we got HelloReply.
+					}()
 				}
 			case Ping:
-				/*val, ok := peers.Load(peerAddr.String())
-				if ok { // Check if last ping was max 4 minutes ago.
-					peerInfo := val.(*PeerInfo)
-					now := time.Now().Unix();
-					if now - peerInfo.Ping <= 4 * 60 {
-						peerInfo.Ping = now
-						okBytes := createPingBytes(rand.Uint32(), Ok)
-						conn.WriteToUDP(okBytes, peerAddr)
-					}
-				}*/
+				okBytes := createEmptyBodyBytes(message.ID, Ok, 0)
+				go func() { writeChan <- NetInfo{ okBytes, peerAddr } }()
 			case Ok:
-				fmt.Println("Received Ok from ", peerAddr.String())
 				// Do nothing?
 			case Error:
-				fmt.Println("Received Error from ", peerAddr.String())
-				// Trzeba zobaczyć o co z tym chodzi. Do czego ten Error jest używany i jak powinien być obsługiwany?
+				fmt.Println("Received Error from ", peerAddr.String(), ": ", string(message.Body))
 			case RootRequest:
 				// TODO - analogicznie do obsługi Hello
 			case RootReply:
-				// TODO - analogicznie do obsługi HelloReply
+				peerInfo, ok := peersMap[peerAddr.String()]
+				if ok {
+					peerInfo.Wg.Add(1)
+					go func() {
+						defer peerInfo.Wg.Done()
+						peerInfo.RootChan <- message.Body // Send through channel that we got RootReply.
+					}()
+				}
 			case DatumRequest:
 				// TODO - wisienka na torcie, wysyłanie w kawałkach itp.
 			case Datum:
 				// TODO
 			case NoDatum:
 				// TODO
+			}
 		}
 
-		//time.Sleep(1 * time.Second)
+		// Tego poniżej nie powinno tu być, ale może się przydać do debugowania, więc jest.
 		//fmt.Println("My addresses known by server after registration by UDP: ", getAddressesOfPeer(name))
 	}
 }

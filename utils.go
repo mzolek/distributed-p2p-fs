@@ -101,7 +101,7 @@ func parseMessage(data []byte) (Message, error) {
 	var signed bool
     var signature []byte
 
-	if typ == Hello || typ == HelloReply || typ == Datum {
+	if typ == Hello || typ == HelloReply || typ == RootReply || typ == Datum {
 		if bodyEnd + 32 > len(data) {
 			return Message{}, errors.New("Missing signature.")
 		}
@@ -144,12 +144,12 @@ func messageToBytes(message Message) []byte {
 	return data
 }
 
-func createPingBytes(id uint32, typ MessageType) []byte {
+func createEmptyBodyBytes(id uint32, typ MessageType, length uint16) []byte {
 	data := messageToBytes(Message{
 		ID:        id,
 		Type:      typ,
-		Length:    0,
-		Body:      make([]byte, 0),
+		Length:    length,
+		Body:      make([]byte, length),
 		Signed:    false,
 		Signature: nil,
 	})

@@ -1,11 +1,14 @@
-W projekcie nie mozemy używać connected socket (Dial) -> bo tylko możemy wtedy rozmawiac z jedym klientem
-
-
-Jak robie liscient UDP to podaje adres lokalny jak nie podam to jest to robione automatycznie
-
-to gdzie wysylam paiety decyduje przy kazdym zadaniu uzywajac write to
-
-
 Teraz uruchomienie to:
 
 go run client.go utils.go name port
+
+Usunąłem registerIP tak jak sugerowałeś, żeby nie powtarzać kodu. Teraz, żeby się zarejestrować należy wpisać do interfejsu użytkownika: galene.org
+W końcowej wersji rejestracja będzie działa się automatycznie na starcie (bardzo łatwe do zrobienia), ale na razie tak jest wygodniej testować całość.
+
+W implementacji jest teraz więcej kanałów niż poprzednio i nie ma sync.Map tylko jest zwykła map używana tylko przez wątek główny. Opowiem Ci jutro o co chodzi. Generalnie unikamy współdzielonych danych jeśli można rozwiązać coś kanałami i na razie się to udaje (sync.Map była współdzielonym obiektem).
+
+TODO:
+* Merkle tree
+* Obsługa Datum
+* Podpisy (na razie czekamy aż poprawi serwer)
+* NAT traversal (na razie czekamy aż to opisze w treści)

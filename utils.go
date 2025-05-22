@@ -34,6 +34,12 @@ const (
 	NoDatum      MessageType = 133
 )
 
+const (
+	Chunk     = 0
+	Directory = 1
+	Big       = 2
+)
+
 const HeaderLength = 7 // Header is ID, Type, Length.
 
 type Message struct {
@@ -63,19 +69,23 @@ func printMessage(message Message, name string) {
 }
 
 func getExtensions(message Message) []byte {
-	if len(message.Body) >= 4 {
-		return message.Body[:4]
-	}
-
-	return nil
+	return message.Body[:4]
 }
 
 func getName(message Message) []byte {
-	if len(message.Body) >= 4 {
-		return message.Body[4:]
-	}
+	return message.Body[4:]
+}
 
-	return nil
+func getHash(message Message) []byte {
+	return message.Body[:32]
+}
+
+func getDatumType(message Message) byte {
+	return message.Body[32]
+}
+
+func getDatumValue(message Message) []byte {
+	return message.Body[33:]
 }
 
 func parseMessage(data []byte) (Message, error) {
@@ -101,7 +111,7 @@ func parseMessage(data []byte) (Message, error) {
 	var signed bool
     var signature []byte
 
-	if typ == Hello || typ == HelloReply || typ == RootReply || typ == Datum {
+	if typ == Hello || typ == HelloReply || typ == RootReply { // || typ == Datum {
 		if bodyEnd + 32 > len(data) {
 			return Message{}, errors.New("Missing signature.")
 		}
@@ -144,12 +154,12 @@ func messageToBytes(message Message) []byte {
 	return data
 }
 
-func createEmptyBodyBytes(id uint32, typ MessageType, length uint16) []byte {
+func createBytesNotSigned(id uint32, typ MessageType, body []byte) []byte {
 	data := messageToBytes(Message{
 		ID:        id,
 		Type:      typ,
-		Length:    length,
-		Body:      make([]byte, length),
+		Length:    uint16(len(body)),
+		Body:      body,
 		Signed:    false,
 		Signature: nil,
 	})

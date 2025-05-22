@@ -33,6 +33,8 @@ type PeerInfo struct {
 	IsUniqueChan chan bool
 	HelloChan chan struct{}
 	RootChan chan []byte
+	SendHashChan chan []byte
+	RecvHashChan chan []byte
 }
 
 type NetInfo struct {
@@ -100,7 +102,7 @@ func getAddressesOfPeer(name string) []string {
 }
 
 func reader(conn *net.UDPConn, readChan chan NetInfo) {
-	buffer := make([]byte, 1024)
+	buffer := make([]byte, 65536)
 
 	for {
 		n, addr, err := conn.ReadFromUDP(buffer)
@@ -108,7 +110,7 @@ func reader(conn *net.UDPConn, readChan chan NetInfo) {
 			fmt.Println("Read error:", err)
 			continue
 		}
-		fmt.Printf("Received from %s: %s\n", addr.String(), string(buffer[:n]))
+		//fmt.Printf("Received from %s: %s\n", addr.String(), string(buffer[:n]))
 		readChan <- NetInfo{ buffer[:n], addr }
 	}
 }
@@ -159,8 +161,10 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 	isUniqueChan := make(chan bool)
 	helloChan := make(chan struct{})
 	rootChan := make(chan []byte)
+	sendHashChan := make(chan []byte)
+	recvHashChan := make(chan []byte)
 
-	peerInfoChan <- &PeerInfo{Name: peerName, Addr: peerAddr, IsUniqueChan: isUniqueChan, HelloChan: helloChan, RootChan: rootChan}
+	peerInfoChan <- &PeerInfo{Name: peerName, Addr: peerAddr, IsUniqueChan: isUniqueChan, HelloChan: helloChan, RootChan: rootChan, SendHashChan: sendHashChan, RecvHashChan: recvHashChan}
 	isUnique := <- isUniqueChan
 
 	if !isUnique {
@@ -182,7 +186,7 @@ helloLoop:
 		}
 	}
 
-	rootRequestBytes := createEmptyBodyBytes(rand.Uint32(), RootRequest, 32)
+	rootRequestBytes := createBytesNotSigned(rand.Uint32(), RootRequest, make([]byte, 32))
 
 	rootTicker := time.NewTicker(1 * time.Second)
 	var rootHash []byte
@@ -199,14 +203,47 @@ rootLoop:
 		}
 	}
 
-	fmt.Println("Root hash is:", string(rootHash))
+	fmt.Println("Root hash is:", rootHash)
 
-	//TODO Datum etc.
-	fmt.Println("TODO: Further communication with", peerName)
+	received := make(map[string]struct{})
+	needed := make(map[string]struct{})
+	needed[string(rootHash)] = struct{}{}
 
+	// Ask about Datum from root.
+	datumRequestBytes := createBytesNotSigned(rand.Uint32(), DatumRequest, rootHash)
+	writeChan <- NetInfo{datumRequestBytes, peerAddr}
 
-	// Epilog.
-	finishCommChan <- peerAddr.String()
+	datumTicker := time.NewTicker(100 * time.Millisecond)
+
+	for {
+		select {
+		case <-datumTicker.C:
+			if len(needed) > 0 {
+				for hashStr, _ := range needed {
+					datumRequestBytes = createBytesNotSigned(rand.Uint32(), DatumRequest, []byte(hashStr))
+					writeChan <- NetInfo{datumRequestBytes, peerAddr}
+					break
+				}
+			} else {
+				// We have all data. Cleaning.
+				datumTicker.Stop()
+				finishCommChan <- peerAddr.String()
+				return
+			}
+		case sendHash := <- sendHashChan:
+			hashStr := string(sendHash)
+			_, ok := received[hashStr]
+			if !ok {
+				needed[hashStr] = struct{}{}
+				datumRequestBytes = createBytesNotSigned(rand.Uint32(), DatumRequest, sendHash)
+				writeChan <- NetInfo{datumRequestBytes, peerAddr}
+			}
+		case recvHash := <- recvHashChan:
+			hashStr := string(recvHash)
+			received[hashStr] = struct{}{}
+			delete(needed, hashStr)
+		}
+	}
 }
 
 func userInterface(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommChan chan string, name string, cryptoKeys CryptoKeys) {
@@ -276,29 +313,28 @@ func main() {
 		case peerInfo := <- peerInfoChan:
 			_, ok := peersMap[peerInfo.Addr.String()]
 			if ok {
-				go func() { peerInfo.IsUniqueChan <- false }() // If this peer is currently being processed by different goroutine then don't create new.
+				go func(peerInfo *PeerInfo) { peerInfo.IsUniqueChan <- false }(peerInfo) // If this peer is currently being processed by different goroutine then don't create new.
 			} else {
 				peersMap[peerInfo.Addr.String()] = peerInfo
-				go func() { peerInfo.IsUniqueChan <- true }()
+				go func(peerInfo *PeerInfo) { peerInfo.IsUniqueChan <- true }(peerInfo)
 			}
 		case peerAddrStr := <- finishCommChan:
 			peerInfo := peersMap[peerAddrStr]
 			delete(peersMap, peerAddrStr)
 
-			go func() {
+			go func(peerInfo *PeerInfo) {
 				peerInfo.Wg.Wait()
 				close(peerInfo.HelloChan)
 				close(peerInfo.RootChan)
-				fmt.Println("Communication with", peerInfo.Name, "is done 1.")
-			}()
-			go func() {
+			}(peerInfo)
+			go func(peerInfo *PeerInfo) {
 				for range peerInfo.HelloChan {}
-				fmt.Println("Communication with", peerInfo.Name, "is done 2.")
-			}()
-			go func() {
+			}(peerInfo)
+			go func(peerInfo *PeerInfo) {
 				for range peerInfo.RootChan {}
-				fmt.Println("Communication with", peerInfo.Name, "is done 3.")
-			}()
+			}(peerInfo)
+
+			fmt.Println("Communication finished with", peerInfo.Name)
 		case netInfo := <-readChan:
 			message, err := parseMessage(netInfo.Bytes)
 			peerAddr := netInfo.Addr
@@ -308,28 +344,23 @@ func main() {
 				continue
 			}
 
-			printMessage(message, "Message")
+			// printMessage(message, "Message")
 
 			switch message.Type {
 			case Hello:
-				peerName := getName(message)
-				if peerName == nil {
-					fmt.Printf("No name peer")
-					continue
-				}
-				go respondToHello(writeChan, string(peerName), peerAddr, message, name, cryptoKeys)
+				go respondToHello(writeChan, string(getName(message)), peerAddr, message, name, cryptoKeys)
 			case HelloReply:
 				peerInfo, ok := peersMap[peerAddr.String()]
 				if ok {
 					peerInfo.Wg.Add(1)
-					go func() {
+					go func(peerInfo *PeerInfo) {
 						defer peerInfo.Wg.Done()
 						peerInfo.HelloChan <- struct{}{} // Send through channel that we got HelloReply.
-					}()
+					}(peerInfo)
 				}
 			case Ping:
-				okBytes := createEmptyBodyBytes(message.ID, Ok, 0)
-				go func() { writeChan <- NetInfo{ okBytes, peerAddr } }()
+				okBytes := createBytesNotSigned(message.ID, Ok, make([]byte, 0))
+				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{ okBytes, peerAddr })
 			case Ok:
 				// Do nothing?
 			case Error:
@@ -340,17 +371,60 @@ func main() {
 				peerInfo, ok := peersMap[peerAddr.String()]
 				if ok {
 					peerInfo.Wg.Add(1)
-					go func() {
+					go func(peerInfo *PeerInfo, message Message) {
 						defer peerInfo.Wg.Done()
 						peerInfo.RootChan <- message.Body // Send through channel that we got RootReply.
-					}()
+					}(peerInfo, message)
 				}
 			case DatumRequest:
 				// TODO - wisienka na torcie, wysyłanie w kawałkach itp.
 			case Datum:
-				// TODO
+				// TODO sprawdzanie podpisów i poprawności hasha. Tworzenie na bieżąco Merkle Tree (na razie po prostu wyświetlam wszytko).
+				peerInfo, ok := peersMap[peerAddr.String()]
+				if ok {
+					recvHash := getHash(message)
+					peerInfo.RecvHashChan <- recvHash
+					//fmt.Println("Hash:", getHash(message))
+					typ := getDatumType(message)
+					switch typ {
+					case Chunk:
+						//value := getDatumValue(message)
+						fmt.Println("Chunk")
+						// fmt.Println("Chunk:", string(value))
+					case Directory:
+						data := getDatumValue(message)
+						fmt.Print("Directory: ")
+						for i := 0; i < len(data); i += 64 {
+							if i + 64 > len(data) {
+								break
+							}
+							filename := string(data[i:(i + 32)])
+							sendHash := data[(i + 32):(i + 64)]
+							fmt.Print(filename, " ")
+							//fmt.Println("Hash:", sendHash)
+							peerInfo.SendHashChan <- sendHash
+						}
+						fmt.Println()
+					case Big:
+						fmt.Println("Big")
+						data := getDatumValue(message)
+						for i := 0; i < len(data); i += 32 {
+							if i + 32 > len(data) {
+								break
+							}
+							peerInfo.SendHashChan <- data[i:(i + 32)]
+						}
+					default:
+						fmt.Println("Incorrect Datum type:", typ)
+					}
+				}
 			case NoDatum:
-				// TODO
+				fmt.Println("No datum with hash:", getHash(message))
+				peerInfo, ok := peersMap[peerAddr.String()]
+				if ok {
+					recvHash := getHash(message)
+					peerInfo.RecvHashChan <- recvHash
+				}
 			}
 		}
 

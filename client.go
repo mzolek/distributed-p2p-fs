@@ -3,20 +3,21 @@
 package main
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"slices"
 	"sync"
+
 	//"crypto/ecdsa"
 	"fmt"
 	"io"
-	"net"
 	"log"
-	"net/http"
 	"math/rand"
+	"net"
+	"net/http"
 	"os"
-	"time"
 	"strconv"
+	"time"
 )
 
 // CONSTANTS.
@@ -26,20 +27,22 @@ const ServerURL = "https://galene.org:8448"
 const ServerName = "galene.org"
 const ServerPort = 8448
 
+const SECRETS_FILES = ".keys"
+
 type PeerInfo struct {
-	Name string
-	Addr *net.UDPAddr
-	Wg sync.WaitGroup
+	Name         string
+	Addr         *net.UDPAddr
+	Wg           sync.WaitGroup
 	IsUniqueChan chan bool
-	HelloChan chan struct{}
-	RootChan chan []byte
+	HelloChan    chan struct{}
+	RootChan     chan []byte
 	SendHashChan chan []byte
 	RecvHashChan chan []byte
 }
 
 type NetInfo struct {
 	Bytes []byte
-	Addr *net.UDPAddr
+	Addr  *net.UDPAddr
 }
 
 // CLIENT-SERVER PROTOCOL.
@@ -65,7 +68,7 @@ func getPeers() []string {
 // Makes PUT request with peer's public key (64 bytes) to register the peer.
 func registerPeer(name string, key []byte) {
 	fmt.Println("name: ", name)
-	req, err := http.NewRequest(http.MethodPut, ServerURL + "/peers/" + name + "/key", bytes.NewBuffer(key))
+	req, err := http.NewRequest(http.MethodPut, ServerURL+"/peers/"+name+"/key", bytes.NewBuffer(key))
 	failOnErr(err)
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -90,6 +93,9 @@ func getAddressesOfPeer(name string) []string {
 	resp, err := http.Get(ServerURL + "/peers/" + name + "/addresses")
 	failOnErr(err)
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return make([]string, 0)
+	}
 	body, err := io.ReadAll(resp.Body)
 	failOnErr(err)
 	addresses := make([]string, 0)
@@ -111,7 +117,7 @@ func reader(conn *net.UDPConn, readChan chan NetInfo) {
 			continue
 		}
 		//fmt.Printf("Received from %s: %s\n", addr.String(), string(buffer[:n]))
-		readChan <- NetInfo{ buffer[:n], addr }
+		readChan <- NetInfo{buffer[:n], addr}
 	}
 }
 
@@ -122,7 +128,7 @@ func writer(conn *net.UDPConn, writeChan chan NetInfo) {
 }
 
 func respondToHello(writeChan chan NetInfo, peerName string, peerAddr *net.UDPAddr, message Message,
-					name string, cryptoKeys CryptoKeys) {
+	name string, cryptoKeys CryptoKeys) {
 	// TODO
 	// peerPublicKey := getKeyOfPeer(peerName)
 	// verify if message.Signature is correct with peerPublicKey.
@@ -134,7 +140,7 @@ func respondToHello(writeChan chan NetInfo, peerName string, peerAddr *net.UDPAd
 }
 
 func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommChan chan string,
-				peerName string, name string, cryptoKeys CryptoKeys) {
+	peerName string, name string, cryptoKeys CryptoKeys) {
 	allPeers := getPeers()
 	if !slices.Contains(allPeers, peerName) { // Check if this peer exists.
 		fmt.Println("Peer", peerName, "does not exist.")
@@ -158,6 +164,7 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 		return
 	}
 
+	// main ->
 	isUniqueChan := make(chan bool)
 	helloChan := make(chan struct{})
 	rootChan := make(chan []byte)
@@ -165,7 +172,7 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 	recvHashChan := make(chan []byte)
 
 	peerInfoChan <- &PeerInfo{Name: peerName, Addr: peerAddr, IsUniqueChan: isUniqueChan, HelloChan: helloChan, RootChan: rootChan, SendHashChan: sendHashChan, RecvHashChan: recvHashChan}
-	isUnique := <- isUniqueChan
+	isUnique := <-isUniqueChan
 
 	if !isUnique {
 		fmt.Println("Communcation with", peerName, "is already being handled. Please be patient.")
@@ -205,22 +212,19 @@ rootLoop:
 
 	fmt.Println("Root hash is:", rootHash)
 
-	received := make(map[string]struct{})
-	needed := make(map[string]struct{})
+	received := make(map[string]struct{}) // map of hashes of data that we have already received.
+	needed := make(map[string]struct{})   // map of hashes of data that we need to receive.
 	needed[string(rootHash)] = struct{}{}
-
-	// Ask about Datum from root.
-	datumRequestBytes := createBytesNotSigned(rand.Uint32(), DatumRequest, rootHash)
-	writeChan <- NetInfo{datumRequestBytes, peerAddr}
 
 	datumTicker := time.NewTicker(100 * time.Millisecond)
 
 	for {
 		select {
+		//
 		case <-datumTicker.C:
 			if len(needed) > 0 {
 				for hashStr, _ := range needed {
-					datumRequestBytes = createBytesNotSigned(rand.Uint32(), DatumRequest, []byte(hashStr))
+					datumRequestBytes := createBytesNotSigned(rand.Uint32(), DatumRequest, []byte(hashStr))
 					writeChan <- NetInfo{datumRequestBytes, peerAddr}
 					break
 				}
@@ -230,15 +234,18 @@ rootLoop:
 				finishCommChan <- peerAddr.String()
 				return
 			}
-		case sendHash := <- sendHashChan:
+		// main received Big or Directory we have to download it.
+		case sendHash := <-sendHashChan:
 			hashStr := string(sendHash)
 			_, ok := received[hashStr]
+			// check if not received already.
 			if !ok {
 				needed[hashStr] = struct{}{}
-				datumRequestBytes = createBytesNotSigned(rand.Uint32(), DatumRequest, sendHash)
+				datumRequestBytes := createBytesNotSigned(rand.Uint32(), DatumRequest, sendHash)
 				writeChan <- NetInfo{datumRequestBytes, peerAddr}
 			}
-		case recvHash := <- recvHashChan:
+		// main received Datum.
+		case recvHash := <-recvHashChan:
 			hashStr := string(recvHash)
 			received[hashStr] = struct{}{}
 			delete(needed, hashStr)
@@ -276,12 +283,38 @@ func main() {
 
 	// Example of usage.
 	names := getPeers()
+	isNameTaken := slices.Contains(names, name)
 	fmt.Println("All peers before registration by HTTPS: ", names)
 	addresses := getAddressesOfPeer(name)
 	fmt.Println("My addresses known by server before registraton by UDP: ", addresses)
+	cryptoKeys := CryptoKeys{}
 
-	cryptoKeys := genCryptoKeys()
-	registerPeer(name, formatPublicKey(cryptoKeys.PublicKey))
+	// TODO implicitly register with server
+	if len(addresses) != 0 || isNameTaken {
+		fmt.Println("Trying loading keys from file.")
+		cryptoKeys, err = loadKeysFromFile(SECRETS_FILES)
+		if err != nil {
+			fmt.Println("No valid keys found. Please register again under different name.")
+			os.Exit(1)
+		}
+		publicKeyOnServer := getKeyOfPeer(name)
+		if !bytes.Equal(publicKeyOnServer, formatPublicKey(cryptoKeys.PublicKey)) {
+			fmt.Println("Name is already registered. Please register under different name.")
+			os.Exit(1)
+		}
+	} else {
+		fmt.Println("Generating keys.")
+		cryptoKeys = genCryptoKeys()
+		if err := saveKeysToFile(cryptoKeys, SECRETS_FILES); err != nil {
+			fmt.Println("Failed to save keys to file:", err)
+		}
+		registerPeer(name, formatPublicKey(cryptoKeys.PublicKey))
+	}
+
+	if len(addresses) == 0 {
+		// TODO hello
+	}
+
 	names = getPeers()
 	fmt.Println("All peers after registration by HTTPS ", names)
 
@@ -299,10 +332,10 @@ func main() {
 
 	peersMap := make(map[string]*PeerInfo) // It is used only by main thread, so it does not have to be thread-safe.
 
-	readChan := make(chan NetInfo) // Channel to read from UDP.
-	writeChan := make(chan NetInfo) // Channel to write to UDP.
+	readChan := make(chan NetInfo)       // Channel to read from UDP.
+	writeChan := make(chan NetInfo)      // Channel to write to UDP.
 	peerInfoChan := make(chan *PeerInfo) // Channel to inform main thread that we want to communcate with new peer.
-	finishCommChan := make(chan string) // Channel to signal to main thread that communication with peer has finished (all data received).
+	finishCommChan := make(chan string)  // Channel to signal to main thread that communication with peer has finished (all data received).
 
 	go reader(conn, readChan)
 	go writer(conn, writeChan)
@@ -310,7 +343,7 @@ func main() {
 
 	for {
 		select {
-		case peerInfo := <- peerInfoChan:
+		case peerInfo := <-peerInfoChan:
 			_, ok := peersMap[peerInfo.Addr.String()]
 			if ok {
 				go func(peerInfo *PeerInfo) { peerInfo.IsUniqueChan <- false }(peerInfo) // If this peer is currently being processed by different goroutine then don't create new.
@@ -318,7 +351,7 @@ func main() {
 				peersMap[peerInfo.Addr.String()] = peerInfo
 				go func(peerInfo *PeerInfo) { peerInfo.IsUniqueChan <- true }(peerInfo)
 			}
-		case peerAddrStr := <- finishCommChan:
+		case peerAddrStr := <-finishCommChan:
 			peerInfo := peersMap[peerAddrStr]
 			delete(peersMap, peerAddrStr)
 
@@ -328,10 +361,12 @@ func main() {
 				close(peerInfo.RootChan)
 			}(peerInfo)
 			go func(peerInfo *PeerInfo) {
-				for range peerInfo.HelloChan {}
+				for range peerInfo.HelloChan {
+				}
 			}(peerInfo)
 			go func(peerInfo *PeerInfo) {
-				for range peerInfo.RootChan {}
+				for range peerInfo.RootChan {
+				}
 			}(peerInfo)
 
 			fmt.Println("Communication finished with", peerInfo.Name)
@@ -360,7 +395,7 @@ func main() {
 				}
 			case Ping:
 				okBytes := createBytesNotSigned(message.ID, Ok, make([]byte, 0))
-				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{ okBytes, peerAddr })
+				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{okBytes, peerAddr})
 			case Ok:
 				// Do nothing?
 			case Error:
@@ -395,7 +430,7 @@ func main() {
 						data := getDatumValue(message)
 						fmt.Print("Directory: ")
 						for i := 0; i < len(data); i += 64 {
-							if i + 64 > len(data) {
+							if i+64 > len(data) {
 								break
 							}
 							filename := string(data[i:(i + 32)])
@@ -409,7 +444,7 @@ func main() {
 						fmt.Println("Big")
 						data := getDatumValue(message)
 						for i := 0; i < len(data); i += 32 {
-							if i + 32 > len(data) {
+							if i+32 > len(data) {
 								break
 							}
 							peerInfo.SendHashChan <- data[i:(i + 32)]

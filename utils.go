@@ -3,15 +3,18 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/elliptic"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
+	"os"
 )
 
 type CryptoKeys struct {
@@ -43,12 +46,12 @@ const (
 const HeaderLength = 7 // Header is ID, Type, Length.
 
 type Message struct {
-	ID          uint32
-	Type        MessageType
-	Length      uint16
-	Body        []byte
-	Signed      bool // If Signed is true then Signature has length 32.
-	Signature   []byte
+	ID        uint32
+	Type      MessageType
+	Length    uint16
+	Body      []byte
+	Signed    bool // If Signed is true then Signature has length 32.
+	Signature []byte
 }
 
 func failOnErr(err error) {
@@ -85,7 +88,12 @@ func getDatumType(message Message) byte {
 }
 
 func getDatumValue(message Message) []byte {
-	return message.Body[33:]
+	return message.Body[33 : message.Length+HeaderLength]
+}
+
+func getMessageWithoutSignature(message Message) []byte {
+	bytes := messageToBytes(message)
+	return bytes[:message.Length+HeaderLength]
 }
 
 func parseMessage(data []byte) (Message, error) {
@@ -109,10 +117,10 @@ func parseMessage(data []byte) (Message, error) {
 	body := data[HeaderLength:bodyEnd]
 
 	var signed bool
-    var signature []byte
+	var signature []byte
 
 	if typ == Hello || typ == HelloReply || typ == RootReply { // || typ == Datum {
-		if bodyEnd + 32 > len(data) {
+		if bodyEnd+32 > len(data) {
 			return Message{}, errors.New("Missing signature.")
 		}
 
@@ -144,6 +152,7 @@ func messageToBytes(message Message) []byte {
 	binary.BigEndian.PutUint16(header[5:7], length)
 
 	data := make([]byte, 0)
+	// TODO don't append use Buffer?
 	data = append(data, header...)
 	data = append(data, message.Body...)
 
@@ -235,15 +244,29 @@ func computeSignature(data []byte, privateKey *ecdsa.PrivateKey) ([]byte, error)
 	return signature, err
 }
 
-// func verifyMessage(message BaseMessage, publicKey *ecdsa.PublicKey) bool {
-// 	if message.Length != uint16(len(message.Payload)) {
-// 		return false
-// 	}
-// 	if message.Sig == nil || len(message.Sig) != 64 {
-// 		return false
-// 	}
-// 	return verifySignature(publicKey, message.Payload, message.Sig)
-// }
+func verifySignedMessage(sendMessage Message, receivedMessage Message, senderPublicKey *ecdsa.PublicKey) bool {
+	if sendMessage.ID != receivedMessage.ID {
+		return false
+	}
+
+	payload := getMessageWithoutSignature(receivedMessage)
+	return verifySignature(senderPublicKey, payload, receivedMessage.Signature)
+}
+
+func verifyDatum(sendMessage Message, receivedMessage Message, senderPublicKey *ecdsa.PublicKey) bool {
+
+	if !verifySignedMessage(sendMessage, receivedMessage, senderPublicKey) {
+		return false
+	}
+
+	if !bytes.Equal(getHash(sendMessage), getHash(receivedMessage)) {
+		return false
+	}
+
+	data := getDatumValue(receivedMessage)
+	hash := sha256.Sum256(data)
+	return bytes.Equal(hash[:], getHash(receivedMessage))
+}
 
 func verifySignature(publicKey *ecdsa.PublicKey, data []byte, signature []byte) bool {
 	var r, s big.Int
@@ -251,4 +274,74 @@ func verifySignature(publicKey *ecdsa.PublicKey, data []byte, signature []byte) 
 	s.SetBytes(signature[32:])
 	hashed := sha256.Sum256(data)
 	return ecdsa.Verify(publicKey, hashed[:], &r, &s)
+}
+
+func saveKeysToFile(keys CryptoKeys, filename string) error {
+	privateKeyBytes := keys.PrivateKey.D.Bytes()
+	publicKeyBytes := formatPublicKey(keys.PublicKey)
+
+	data := append(privateKeyBytes, publicKeyBytes...)
+	return writeToFile(data, filename)
+}
+
+func loadKeysFromFile(filename string) (CryptoKeys, error) {
+	data, err := readFromFile(filename)
+	if err != nil {
+		return CryptoKeys{}, err
+	}
+
+	if len(data) < 32+64 {
+		return CryptoKeys{}, errors.New("Invalid key file format")
+	}
+
+	privateKey := new(ecdsa.PrivateKey)
+	privateKey.PublicKey.Curve = elliptic.P256()
+	privateKey.D = new(big.Int).SetBytes(data[:32])
+	publicKey := new(ecdsa.PublicKey)
+	publicKey.Curve = elliptic.P256()
+	publicKey.X = new(big.Int).SetBytes(data[32:64])
+	publicKey.Y = new(big.Int).SetBytes(data[64:96])
+
+	privateKey.PublicKey = *publicKey
+
+	return CryptoKeys{privateKey, publicKey}, nil
+}
+
+func writeToFile(data []byte, filename string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = file.Write(data)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func readFromFile(filename string) ([]byte, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	data := make([]byte, 0)
+	buf := make([]byte, 4096) // Read in chunks of 4096 bytes.
+	for {
+		n, err := file.Read(buf)
+		if n > 0 {
+			data = append(data, buf[:n]...)
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+	}
+
+	return data, nil
 }

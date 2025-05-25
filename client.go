@@ -36,8 +36,8 @@ type PeerInfo struct {
 	IsUniqueChan chan bool
 	HelloChan    chan struct{}
 	RootChan     chan []byte
-	SendHashChan chan []byte
-	RecvHashChan chan []byte
+	// SendHashChan chan []byte
+	recvDatum chan Message
 }
 
 type NetInfo struct {
@@ -168,10 +168,11 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 	isUniqueChan := make(chan bool)
 	helloChan := make(chan struct{})
 	rootChan := make(chan []byte)
-	sendHashChan := make(chan []byte)
-	recvHashChan := make(chan []byte)
+	recvDatum := make(chan Message)
+	// sendHashChan := make(chan []byte)
 
-	peerInfoChan <- &PeerInfo{Name: peerName, Addr: peerAddr, IsUniqueChan: isUniqueChan, HelloChan: helloChan, RootChan: rootChan, SendHashChan: sendHashChan, RecvHashChan: recvHashChan}
+	// peerInfoChan <- &PeerInfo{Name: peerName, Addr: peerAddr, IsUniqueChan: isUniqueChan, HelloChan: helloChan, RootChan: rootChan, SendHashChan: sendHashChan, recvDatum: recvDatum}
+	peerInfoChan <- &PeerInfo{Name: peerName, Addr: peerAddr, IsUniqueChan: isUniqueChan, HelloChan: helloChan, RootChan: rootChan, recvDatum: recvDatum}
 	isUnique := <-isUniqueChan
 
 	if !isUnique {
@@ -210,11 +211,18 @@ rootLoop:
 		}
 	}
 
-	fmt.Println("Root hash is:", rootHash)
+	// fmt.Println("Root hash is:", rootHash)
 
-	received := make(map[string]struct{}) // map of hashes of data that we have already received.
-	needed := make(map[string]struct{})   // map of hashes of data that we need to receive.
-	needed[string(rootHash)] = struct{}{}
+	// received := make(map[string]struct{}) // map of hashes of data that we have already received.
+	needed := make(map[[32]byte]struct{}) // map of hashes of data that we need to receive.
+	needed[[32]byte(rootHash)] = struct{}{}
+
+	// filesSystemGuard := newNode([]byte{}, Directory, nil, "")
+	root := newNode(rootHash, 0, nil, "/")
+	// filesSystemGuard.AddChild(root)
+
+	hashToNodeMap := make(map[[32]byte]*Node) // map of hashes to nodes, used to build Merkle Tree.
+	hashToNodeMap[[32]byte(rootHash)] = root
 
 	datumTicker := time.NewTicker(100 * time.Millisecond)
 
@@ -223,34 +231,39 @@ rootLoop:
 		//
 		case <-datumTicker.C:
 			if len(needed) > 0 {
-				for hashStr, _ := range needed {
-					datumRequestBytes := createBytesNotSigned(rand.Uint32(), DatumRequest, []byte(hashStr))
+				for hash, _ := range needed {
+					datumRequestBytes := createBytesNotSigned(rand.Uint32(), DatumRequest, hash[:])
 					writeChan <- NetInfo{datumRequestBytes, peerAddr}
 					break
 				}
 			} else {
+				// TODO why do we stop here? When we have all data, we should add user file system traversal.
 				// We have all data. Cleaning.
 				datumTicker.Stop()
 				finishCommChan <- peerAddr.String()
+				fileSystem, err := buildFileSystem(root)
+				if err != nil {
+					fmt.Println("Error building file system:", err)
+					return
+				}
+
+				printFileSystem(fileSystem, "")
 				return
 			}
-		// main received Big or Directory we have to download it.
-		case sendHash := <-sendHashChan:
-			hashStr := string(sendHash)
-			_, ok := received[hashStr]
-			// check if not received already.
-			if !ok {
-				needed[hashStr] = struct{}{}
-				datumRequestBytes := createBytesNotSigned(rand.Uint32(), DatumRequest, sendHash)
-				writeChan <- NetInfo{datumRequestBytes, peerAddr}
+
+		case message := <-recvDatum:
+			fmt.Println("Received Datum with hash:", getHash(message))
+
+			// if message was NoDatum then we don't need to process it.
+			_, ok := needed[getHash(message)]
+			if ok && message.Type == Datum {
+				processNode(message, hashToNodeMap, needed)
 			}
-		// main received Datum.
-		case recvHash := <-recvHashChan:
-			hashStr := string(recvHash)
-			received[hashStr] = struct{}{}
-			delete(needed, hashStr)
+			// Datum or NoDatum we can remove it from needed.
+			delete(needed, getHash(message))
 		}
 	}
+
 }
 
 func userInterface(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommChan chan string, name string, cryptoKeys CryptoKeys) {
@@ -413,53 +426,19 @@ func main() {
 				}
 			case DatumRequest:
 				// TODO - wisienka na torcie, wysyłanie w kawałkach itp.
-			case Datum:
+			case Datum, NoDatum:
 				// TODO sprawdzanie podpisów i poprawności hasha. Tworzenie na bieżąco Merkle Tree (na razie po prostu wyświetlam wszytko).
 				peerInfo, ok := peersMap[peerAddr.String()]
 				if ok {
-					recvHash := getHash(message)
-					peerInfo.RecvHashChan <- recvHash
-					//fmt.Println("Hash:", getHash(message))
-					typ := getDatumType(message)
-					switch typ {
-					case Chunk:
-						//value := getDatumValue(message)
-						fmt.Println("Chunk")
-						// fmt.Println("Chunk:", string(value))
-					case Directory:
-						data := getDatumValue(message)
-						fmt.Print("Directory: ")
-						for i := 0; i < len(data); i += 64 {
-							if i+64 > len(data) {
-								break
-							}
-							filename := string(data[i:(i + 32)])
-							sendHash := data[(i + 32):(i + 64)]
-							fmt.Print(filename, " ")
-							//fmt.Println("Hash:", sendHash)
-							peerInfo.SendHashChan <- sendHash
-						}
-						fmt.Println()
-					case Big:
-						fmt.Println("Big")
-						data := getDatumValue(message)
-						for i := 0; i < len(data); i += 32 {
-							if i+32 > len(data) {
-								break
-							}
-							peerInfo.SendHashChan <- data[i:(i + 32)]
-						}
-					default:
-						fmt.Println("Incorrect Datum type:", typ)
-					}
+					peerInfo.recvDatum <- message
 				}
-			case NoDatum:
-				fmt.Println("No datum with hash:", getHash(message))
-				peerInfo, ok := peersMap[peerAddr.String()]
-				if ok {
-					recvHash := getHash(message)
-					peerInfo.RecvHashChan <- recvHash
-				}
+				// case NoDatum:
+				// 	fmt.Println("No datum with hash:", getHash(message))
+				// 	peerInfo, ok := peersMap[peerAddr.String()]
+				// 	if ok {
+				// 		// recvHash := getHash(message)
+				// 		peerInfo.recvDatum <- message
+				// 	}
 			}
 		}
 

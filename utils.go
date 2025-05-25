@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -79,8 +78,8 @@ func getName(message Message) []byte {
 	return message.Body[4:]
 }
 
-func getHash(message Message) []byte {
-	return message.Body[:32]
+func getHash(message Message) [32]byte {
+	return [32]byte(message.Body[:32])
 }
 
 func getDatumType(message Message) byte {
@@ -97,6 +96,7 @@ func getMessageWithoutSignature(message Message) []byte {
 }
 
 func parseMessage(data []byte) (Message, error) {
+	// TODO if message type is Datum check if correct format
 	if len(data) < HeaderLength {
 		return Message{}, errors.New("Message too short.")
 	}
@@ -259,13 +259,13 @@ func verifyDatum(sendMessage Message, receivedMessage Message, senderPublicKey *
 		return false
 	}
 
-	if !bytes.Equal(getHash(sendMessage), getHash(receivedMessage)) {
+	if getHash(sendMessage) != getHash(receivedMessage) {
 		return false
 	}
 
 	data := getDatumValue(receivedMessage)
 	hash := sha256.Sum256(data)
-	return bytes.Equal(hash[:], getHash(receivedMessage))
+	return hash != getHash(receivedMessage)
 }
 
 func verifySignature(publicKey *ecdsa.PublicKey, data []byte, signature []byte) bool {

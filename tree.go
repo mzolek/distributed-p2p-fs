@@ -3,7 +3,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"os"
 )
 
 type Node struct {
@@ -95,6 +99,33 @@ func printFileSystem(folder *Folder, indent string) {
 	for _, subFolder := range folder.Directories {
 		printFileSystem(subFolder, indent+"--")
 	}
+}
+
+func saveImageTooDisk(file *File, path string) error {
+	data := append([]byte{0xFF, 0xD8}, file.Data...)
+
+	fmt.Printf("Saving %s.\n", path)
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("Error decoding image data for file %s: %v", file.Name, err)
+	}
+	fmt.Printf("Saving %s.\n", path)
+
+	outFile, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("Error creating file %s: %v", path, err)
+	}
+	defer outFile.Close()
+
+	var opts jpeg.Options
+	opts.Quality = 1
+	err = jpeg.Encode(outFile, img, &opts)
+	if err != nil {
+		return fmt.Errorf("Error encoding image data for file %s: %v", file.Name, err)
+	}
+	fmt.Printf("File %s saved successfully.\n", path)
+	return nil
 }
 
 func buildFileSystem(node *Node) (*Folder, error) {

@@ -248,6 +248,19 @@ rootLoop:
 				}
 
 				printFileSystem(fileSystem, "")
+				for i := 0; i < len(fileSystem.Directories[1].Files); i++ {
+					fmt.Println("File:", fileSystem.Directories[1].Files[i].Name)
+					err = saveImageTooDisk(fileSystem.Directories[1].Files[i], "output_"+strconv.Itoa(i)+".jpeg")
+					if err != nil {
+						fmt.Println("Error saving file to disk:", err)
+					}
+				}
+
+				// err = saveImageTooDisk(fileSystem.Directories[1].Files[1], "output.jpeg")
+				// if err != nil {
+				// 	fmt.Println("Error saving image to disk:", err)
+				// }
+
 				return
 			}
 

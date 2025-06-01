@@ -30,11 +30,20 @@ type Folder struct {
 }
 
 func newNode(hash []byte, nodeType byte, value []byte, name string) *Node {
+	hashCopy := make([]byte, len(hash))
+	copy(hashCopy, hash)
+
+	var valueCopy []byte
+	if value != nil {
+		valueCopy = make([]byte, len(value))
+		copy(valueCopy, value)
+	}
+
 	return &Node{
-		Hash:     hash,
+		Hash:     hashCopy,
 		Type:     nodeType,
 		Children: []*Node{},
-		Value:    value,
+		Value:    valueCopy,
 		Name:     name,
 	}
 }
@@ -60,7 +69,8 @@ func processNode(message Message, hashToNodeMap map[[32]byte]*Node, needed map[[
 
 	switch node.Type {
 	case Chunk:
-		node.Value = data
+		node.Value = make([]byte, len(data))
+		copy(node.Value, data)
 	case Directory:
 		for i := 0; i < len(data); i += 64 {
 			if i+64 > len(data) {
@@ -79,7 +89,7 @@ func processNode(message Message, hashToNodeMap map[[32]byte]*Node, needed map[[
 				break
 			}
 			hash := [32]byte(data[i:(i + 32)])
-			child := newNode(hash[:], 0, nil, "")
+			child := newNode(hash[:], 0, nil, node.Name)
 			node.AddChild(child)
 			needed[hash] = struct{}{}
 			hashToNodeMap[hash] = child
@@ -87,7 +97,6 @@ func processNode(message Message, hashToNodeMap map[[32]byte]*Node, needed map[[
 	default:
 		fmt.Println("Unknown node type:", node.Type)
 		return
-
 	}
 }
 
@@ -101,12 +110,20 @@ func printFileSystem(folder *Folder, indent string) {
 	}
 }
 
+func printTextFile(file *File) {
+	fmt.Println("Text File: " + file.Name)
+	content := string(file.Data)
+	if len(content) > 100 {
+		content = content[:100] + "..."
+	}
+	fmt.Println("Content: " + content)
+}
+
 func saveImageTooDisk(file *File, path string) error {
-	data := append([]byte{0xFF, 0xD8}, file.Data...)
 
 	fmt.Printf("Saving %s.\n", path)
 
-	img, _, err := image.Decode(bytes.NewReader(data))
+	img, _, err := image.Decode(bytes.NewReader(file.Data))
 	if err != nil {
 		return fmt.Errorf("Error decoding image data for file %s: %v", file.Name, err)
 	}
@@ -119,7 +136,7 @@ func saveImageTooDisk(file *File, path string) error {
 	defer outFile.Close()
 
 	var opts jpeg.Options
-	opts.Quality = 1
+	opts.Quality = 100
 	err = jpeg.Encode(outFile, img, &opts)
 	if err != nil {
 		return fmt.Errorf("Error encoding image data for file %s: %v", file.Name, err)
@@ -168,11 +185,11 @@ func buildFileSystem(node *Node) (*Folder, error) {
 				return nil, fmt.Errorf("mixed content in big %s", child.Name)
 			}
 		case Chunk:
-
-			dir.Files = append(dir.Files, &File{
+			file := &File{
 				Name: child.Name,
 				Data: child.Value,
-			})
+			}
+			dir.Files = append(dir.Files, file)
 		default:
 			fmt.Printf("Unknown child type %d in directory %s\n", child.Type, node.Name)
 			// return nil, fmt.Errorf("unknown child type %d in directory %s", child.Type, node.Name)

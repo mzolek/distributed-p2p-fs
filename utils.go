@@ -65,7 +65,12 @@ func printMessage(message Message, name string) {
 	fmt.Println("ID: ", message.ID)
 	fmt.Println("Type: ", message.Type)
 	fmt.Println("Length: ", message.Length)
-	fmt.Println("Body: ", string(message.Body))
+	fmt.Println("Body: ", message.Body)
+	if message.Signed {
+		fmt.Println("Signature: ", fmt.Sprintf("%x", message.Signature))
+	} else {
+		fmt.Println("Signature: Not signed")
+	}
 	fmt.Println("-------------------------------")
 	fmt.Println()
 }
@@ -87,7 +92,7 @@ func getDatumType(message Message) byte {
 }
 
 func getDatumValue(message Message) []byte {
-	return message.Body[33 : message.Length+HeaderLength]
+	return message.Body[33:]
 }
 
 func getMessageWithoutSignature(message Message) []byte {

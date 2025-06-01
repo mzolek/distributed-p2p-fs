@@ -248,6 +248,10 @@ rootLoop:
 				}
 
 				printFileSystem(fileSystem, "")
+
+				for i := 0; i < len(fileSystem.Directories[0].Files); i++ {
+					printTextFile(fileSystem.Directories[0].Files[i])
+				}
 				for i := 0; i < len(fileSystem.Directories[1].Files); i++ {
 					fmt.Println("File:", fileSystem.Directories[1].Files[i].Name)
 					err = saveImageTooDisk(fileSystem.Directories[1].Files[i], "output_"+strconv.Itoa(i)+".jpeg")
@@ -265,7 +269,7 @@ rootLoop:
 			}
 
 		case message := <-recvDatum:
-			fmt.Println("Received Datum with hash:", getHash(message))
+			// fmt.Println("Received Datum with hash:", getHash(message))
 
 			// if message was NoDatum then we don't need to process it.
 			_, ok := needed[getHash(message)]

@@ -65,7 +65,7 @@ func printMessage(message Message, name string) {
 	fmt.Println("ID: ", message.ID)
 	fmt.Println("Type: ", message.Type)
 	fmt.Println("Length: ", message.Length)
-	fmt.Println("Body: ", message.Body)
+	fmt.Println("Body: ", string(message.Body))
 	if message.Signed {
 		fmt.Println("Signature: ", fmt.Sprintf("%x", message.Signature))
 	} else {
@@ -124,13 +124,13 @@ func parseMessage(data []byte) (Message, error) {
 	var signed bool
 	var signature []byte
 
-	if typ == Hello || typ == HelloReply || typ == RootReply { // || typ == Datum {
-		if bodyEnd+32 > len(data) {
+	if typ == Hello || typ == HelloReply || typ == RootReply || typ == NoDatum { // || typ == Datum {
+		if bodyEnd+64 > len(data) {
 			return Message{}, errors.New("Missing signature.")
 		}
 
 		signed = true
-		signature = data[bodyEnd:(bodyEnd + 32)]
+		signature = data[bodyEnd:(bodyEnd + 64)]
 	} else {
 		signed = false
 		signature = nil
@@ -233,11 +233,15 @@ func formatPublicKey(publicKey *ecdsa.PublicKey) []byte {
 }
 
 func bytesToPublicKey(key []byte) *ecdsa.PublicKey {
-	publicKey := new(ecdsa.PublicKey)
-	publicKey.Curve = elliptic.P256()
-	publicKey.X.FillBytes(key[:32])
-	publicKey.Y.FillBytes(key[32:])
-	return publicKey
+	var x, y big.Int
+	x.SetBytes(key[:32])
+	y.SetBytes(key[32:])
+	publicKey := ecdsa.PublicKey{
+		Curve: elliptic.P256(),
+		X:     &x,
+		Y:     &y,
+	}
+	return &publicKey
 }
 
 func computeSignature(data []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
@@ -250,11 +254,14 @@ func computeSignature(data []byte, privateKey *ecdsa.PrivateKey) ([]byte, error)
 }
 
 func verifySignedMessage(sendMessage Message, receivedMessage Message, senderPublicKey *ecdsa.PublicKey) bool {
-	if sendMessage.ID != receivedMessage.ID {
-		return false
-	}
+	// if sendMessage.ID != receivedMessage.ID {
+	// 	return false
+	// }
 
 	payload := getMessageWithoutSignature(receivedMessage)
+	fmt.Printf("[verifySignedMessage] Payload: %x\n", payload)
+	printMessage(receivedMessage, "Received Message")
+
 	return verifySignature(senderPublicKey, payload, receivedMessage.Signature)
 }
 

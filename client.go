@@ -5,13 +5,13 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"log"
 	"slices"
 	"sync"
 
 	//"crypto/ecdsa"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -35,7 +35,7 @@ type PeerInfo struct {
 	Wg           sync.WaitGroup
 	IsUniqueChan chan bool
 	HelloChan    chan struct{}
-	RootChan     chan []byte
+	RootChan     chan Message
 	// SendHashChan chan []byte
 	recvDatum chan Message
 }
@@ -78,13 +78,19 @@ func registerPeer(name string, key []byte) {
 
 // 3.3
 // Returns slice of 64 bytes with public key of given peer.
-func getKeyOfPeer(name string) []byte {
+// TODO cant fail on error
+func getKeyOfPeer(name string) ([]byte, error) {
 	resp, err := http.Get(ServerURL + "/peers/" + name + "/key")
-	failOnErr(err)
+	if err != nil {
+		return nil, err
+	}
+
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	failOnErr(err)
-	return body
+	if err != nil {
+		return nil, err
+	}
+	return body, nil
 }
 
 // 3.4
@@ -129,8 +135,22 @@ func writer(conn *net.UDPConn, writeChan chan NetInfo) {
 
 func respondToHello(writeChan chan NetInfo, peerName string, peerAddr *net.UDPAddr, message Message,
 	name string, cryptoKeys CryptoKeys) {
-	// TODO
-	// peerPublicKey := getKeyOfPeer(peerName)
+
+	keysBytes, err := getKeyOfPeer(peerName)
+	if err != nil {
+		fmt.Println("Error getting public key of peer:", peerName, "-", err)
+		return
+	}
+
+	peerPublicKey := bytesToPublicKey(keysBytes)
+	// TODO we should pass id of message we send to peer as first arg currently
+	// we cant do that
+	isCorrect := verifySignedMessage(message, message, peerPublicKey)
+	if !isCorrect {
+		fmt.Println("Received Hello from", peerName, "with incorrect signature.")
+		return
+	}
+
 	// verify if message.Signature is correct with peerPublicKey.
 	// if yes then create and send HelloReply:
 	helloReplyBytes, err := createHelloBytes(message.ID, HelloReply, getExtensions(message), []byte(name), cryptoKeys.PrivateKey) // Using my name, not peer name in HelloReply.
@@ -151,6 +171,14 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 		fmt.Println("Peer", peerName, "does not have any UDP address.")
 		return
 	}
+	peerPublicKeyBytes, err := getKeyOfPeer(peerName)
+	if err != nil {
+		fmt.Println("Error getting public key of peer:", peerName, "-", err)
+		return
+	}
+	fmt.Printf("Peer %s has public key: %x, length: %d\n", peerName, peerPublicKeyBytes, len(peerPublicKeyBytes))
+	peerPublicKey := bytesToPublicKey(peerPublicKeyBytes)
+
 	peerAddr, err := net.ResolveUDPAddr("udp", addresses[0])
 	if err != nil {
 		fmt.Println("Incorrect address.")
@@ -167,7 +195,7 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 	// main ->
 	isUniqueChan := make(chan bool)
 	helloChan := make(chan struct{})
-	rootChan := make(chan []byte)
+	rootChan := make(chan Message)
 	recvDatum := make(chan Message)
 	// sendHashChan := make(chan []byte)
 
@@ -204,7 +232,13 @@ rootLoop:
 		case <-rootTicker.C:
 			fmt.Println("Sending RootRequest to", peerName)
 			writeChan <- NetInfo{rootRequestBytes, peerAddr}
-		case rootHash = <-rootChan:
+		case rootMessage := <-rootChan:
+
+			if !verifySignedMessage(rootMessage, rootMessage, peerPublicKey) {
+				fmt.Println("Received RootReply from", peerName, "with incorrect signature.")
+				return
+			}
+			rootHash = rootMessage.Body
 			rootTicker.Stop()
 			fmt.Println("Got RootReply from", peerName)
 			break rootLoop
@@ -271,7 +305,14 @@ rootLoop:
 		case message := <-recvDatum:
 			// fmt.Println("Received Datum with hash:", getHash(message))
 
+			if message.Type == NoDatum {
+				if !verifySignedMessage(message, message, peerPublicKey) {
+					continue
+				}
+			}
+
 			// if message was NoDatum then we don't need to process it.
+			fmt.Print("HERE\n")
 			_, ok := needed[getHash(message)]
 			if ok && message.Type == Datum {
 				processNode(message, hashToNodeMap, needed)
@@ -327,7 +368,7 @@ func main() {
 			fmt.Println("No valid keys found. Please register again under different name.")
 			os.Exit(1)
 		}
-		publicKeyOnServer := getKeyOfPeer(name)
+		publicKeyOnServer, _ := getKeyOfPeer(name)
 		if !bytes.Equal(publicKeyOnServer, formatPublicKey(cryptoKeys.PublicKey)) {
 			fmt.Println("Name is already registered. Please register under different name.")
 			os.Exit(1)
@@ -438,7 +479,7 @@ func main() {
 					peerInfo.Wg.Add(1)
 					go func(peerInfo *PeerInfo, message Message) {
 						defer peerInfo.Wg.Done()
-						peerInfo.RootChan <- message.Body // Send through channel that we got RootReply.
+						peerInfo.RootChan <- message // Send through channel that we got RootReply.
 					}(peerInfo, message)
 				}
 			case DatumRequest:

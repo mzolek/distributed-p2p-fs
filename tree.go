@@ -3,12 +3,11 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"fmt"
-	"image"
-	"image/jpeg"
+	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 type Node struct {
@@ -111,39 +110,46 @@ func printFileSystem(folder *Folder, indent string) {
 	}
 }
 
-func printTextFile(file *File) {
-	fmt.Println("Text File: " + file.Name)
-	content := string(file.Data)
-	if len(content) > 100 {
-		content = content[:100] + "..."
+func saveFileSystem(folder *Folder, basePath string) {
+
+	// absBasePath, err := filepath.Abs(basePath)
+	// fmt.Printf("DEBUG basePath: '%s', absBasePath: '%s'\n", basePath, absBasePath)
+	fmt.Printf("DEBUG basePath: '%s'\n", basePath)
+
+	// if err != nil {
+	// 	fmt.Printf("error getting absolute path: %v\n", err)
+	// 	return
+	// }
+	currentPath := filepath.Join(basePath, folder.Name)
+
+	fmt.Printf("Is path basePath valid %t: \n", fs.ValidPath(basePath))
+	// fmt.Printf("Is path absBasePath valid %t: \n", fs.ValidPath(absBasePath))
+	fmt.Printf("Is path currentPath valid: %t: \n", fs.ValidPath(currentPath))
+	fmt.Printf("Is path folder.Name valid: %t: \n", fs.ValidPath(folder.Name))
+
+	// fmt.Printf("DEBUG currentPath: %s, absolutePath: %s\n", currentPath, absBasePath)
+	fmt.Printf("Creating folder: '%s'\n", folder.Name)
+	if folder.Name == "" {
+		fmt.Println("error: folder name is empty")
+		return
 	}
-	fmt.Println("Content: " + content)
-}
 
-func saveImageTooDisk(file *File, path string) error {
-
-	fmt.Printf("Saving %s.\n", path)
-
-	img, _, err := image.Decode(bytes.NewReader(file.Data))
-	if err != nil {
-		return fmt.Errorf("Error decoding image data for file %s: %v", file.Name, err)
+	if err := os.MkdirAll(currentPath, 0755); err != nil && !os.IsExist(err) {
+		fmt.Printf("error creating directory %s: %v\n", currentPath, err)
+		return
 	}
-	fmt.Printf("Saving %s.\n", path)
 
-	outFile, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("Error creating file %s: %v", path, err)
+	for _, file := range folder.Files {
+		// Join path safely
+		filePath := filepath.Join(currentPath, file.Name)
+		if err := os.WriteFile(filePath, file.Data, 0644); err != nil {
+			fmt.Printf("error writing file %s: %v\n", filePath, err)
+		}
 	}
-	defer outFile.Close()
 
-	var opts jpeg.Options
-	opts.Quality = 100
-	err = jpeg.Encode(outFile, img, &opts)
-	if err != nil {
-		return fmt.Errorf("Error encoding image data for file %s: %v", file.Name, err)
+	for _, subFolder := range folder.Directories {
+		saveFileSystem(subFolder, currentPath)
 	}
-	fmt.Printf("File %s saved successfully.\n", path)
-	return nil
 }
 
 func buildFileSystem(node *Node) (*Folder, error) {

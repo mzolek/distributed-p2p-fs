@@ -6,17 +6,17 @@ import (
 	"bufio"
 	"bytes"
 	"log"
+	"math/rand"
 	"slices"
+	"strconv"
 	"sync"
 
 	//"crypto/ecdsa"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -274,7 +274,7 @@ rootLoop:
 	needed[[32]byte(rootHash)] = struct{}{}
 
 	// filesSystemGuard := newNode([]byte{}, Directory, nil, "")
-	root := newNode(rootHash, 0, nil, "/")
+	root := newNode(rootHash, 0, nil, "root")
 	// filesSystemGuard.AddChild(root)
 
 	hashToNodeMap := make(map[[32]byte]*Node) // map of hashes to nodes, used to build Merkle Tree.
@@ -282,6 +282,7 @@ rootLoop:
 
 	datumTicker := time.NewTicker(100 * time.Millisecond)
 
+downloadLoop:
 	for {
 		select {
 		//
@@ -297,31 +298,25 @@ rootLoop:
 				// We have all data. Cleaning.
 				datumTicker.Stop()
 				finishCommChan <- peerAddr.String()
-				fileSystem, err := buildFileSystem(root)
-				if err != nil {
-					fmt.Println("Error building file system:", err)
-					return
-				}
+				break downloadLoop
 
-				printFileSystem(fileSystem, "")
-
-				for i := 0; i < len(fileSystem.Directories[0].Files); i++ {
-					printTextFile(fileSystem.Directories[0].Files[i])
-				}
-				for i := 0; i < len(fileSystem.Directories[1].Files); i++ {
-					fmt.Println("File:", fileSystem.Directories[1].Files[i].Name)
-					err = saveImageTooDisk(fileSystem.Directories[1].Files[i], "output_"+strconv.Itoa(i)+".jpeg")
-					if err != nil {
-						fmt.Println("Error saving file to disk:", err)
-					}
-				}
-
-				// err = saveImageTooDisk(fileSystem.Directories[1].Files[1], "output.jpeg")
-				// if err != nil {
-				// 	fmt.Println("Error saving image to disk:", err)
+				// for i := 0; i < len(fileSystem.Directories[0].Files); i++ {
+				// 	printTextFile(fileSystem.Directories[0].Files[i])
+				// }
+				// for i := 0; i < len(fileSystem.Directories[1].Files); i++ {
+				// 	fmt.Println("File:", fileSystem.Directories[1].Files[i].Name)
+				// 	err = saveImageTooDisk(fileSystem.Directories[1].Files[i], "output_"+strconv.Itoa(i)+".jpeg")
+				// 	if err != nil {
+				// 		fmt.Println("Error saving file to disk:", err)
+				// 	}
 				// }
 
-				return
+				// // err = saveImageTooDisk(fileSystem.Directories[1].Files[1], "output.jpeg")
+				// // if err != nil {
+				// // 	fmt.Println("Error saving image to disk:", err)
+				// // }
+
+				// return
 			}
 
 		case message := <-recvDatum:
@@ -345,6 +340,17 @@ rootLoop:
 			}
 		}
 	}
+
+	fileSystem, err := buildFileSystem(root)
+	if err != nil {
+		fmt.Println("Error building file system:", err)
+		return
+	}
+
+	printFileSystem(fileSystem, "")
+
+	saveFileSystem(fileSystem, ".")
+	return
 
 }
 

@@ -8,6 +8,7 @@ import (
 	"log"
 	"slices"
 	"sync"
+
 	//"crypto/ecdsa"
 	"fmt"
 	"io"
@@ -144,7 +145,7 @@ func respondToHello(writeChan chan NetInfo, peerName string, peerAddr *net.UDPAd
 	peerPublicKey := bytesToPublicKey(keysBytes)
 	// TODO we should pass id of message we send to peer as first arg currently
 	// we cant do that
-	isCorrect := verifySignedMessage(message, message, peerPublicKey)
+	isCorrect := verifySignedMessage(message, peerPublicKey, false)
 	if !isCorrect {
 		fmt.Println("Received Hello from", peerName, "with incorrect signature.")
 		return
@@ -211,7 +212,12 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 	if peerName != ServerName {
 		serverAddrs := getAddressesOfPeer(ServerName)
 		serverAddr, _ := net.ResolveUDPAddr("udp", serverAddrs[0])
-		natBytes := createBytesNotSigned(42, NatTraversalRequest, udpAddrToBytes(peerAddr)) // myAddr też nie działa
+		natBytes, err := signedMessage(createBytesNotSigned(42, NatTraversalRequest, udpAddrToBytes(peerAddr)), cryptoKeys.PrivateKey) // myAddr też nie działa
+		if err != nil {
+			fmt.Println("Error creating NatTraversalRequest:", err)
+			finishCommChan <- peerAddr.String()
+			return
+		}
 		writeChan <- NetInfo{natBytes, serverAddr}
 		fmt.Printf("NatTraversalRequest")
 	}
@@ -247,7 +253,7 @@ rootLoop:
 			writeChan <- NetInfo{rootRequestBytes, peerAddr}
 		case rootMessage := <-rootChan:
 
-			if !verifySignedMessage(rootMessage, rootMessage, peerPublicKey) {
+			if !verifySignedMessage(rootMessage, peerPublicKey, true) {
 				fmt.Println("Received RootReply from", peerName, "with incorrect signature.")
 				return
 			}
@@ -319,16 +325,16 @@ rootLoop:
 			// fmt.Println("Received Datum with hash:", getHash(message))
 
 			if message.Type == NoDatum {
-				if !verifySignedMessage(message, message, peerPublicKey) {
+				if !verifySignedMessage(message, peerPublicKey, true) {
 					delete(needed, getHash(message))
-					continue
 				}
+				continue
 			}
 
 			fmt.Print("HERE\n")
 
 			_, ok := needed[getHash(message)]
-			if ok && verifyDatum(message, message) {
+			if ok && verifyDatum(message) {
 				fmt.Print("CORRECT\n")
 
 				processNode(message, hashToNodeMap, needed)
@@ -486,6 +492,12 @@ func main() {
 				okBytes := createBytesNotSigned(message.ID, Ok, make([]byte, 0))
 				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{okBytes, peerAddr})
 			case NatTraversalRequest2:
+
+				if !verifySignedMessage(message, cryptoKeys.PublicKey, false) {
+					fmt.Println("Signature verification failed.")
+					continue
+				}
+
 				fmt.Printf("NatTraversalRequest2")
 				okBytes := createBytesNotSigned(message.ID, Ok, make([]byte, 0))
 				pingBytes := createBytesNotSigned(message.ID, Ping, make([]byte, 0))

@@ -13,8 +13,8 @@ import (
 	"io"
 	"log"
 	"math/big"
-	"os"
 	"net"
+	"os"
 )
 
 type CryptoKeys struct {
@@ -25,18 +25,18 @@ type CryptoKeys struct {
 type MessageType uint8
 
 const (
-	Ping         MessageType = 0
-	Hello        MessageType = 1
-	RootRequest  MessageType = 2
-	DatumRequest MessageType = 3
-	NatTraversalRequest MessageType = 4
+	Ping                 MessageType = 0
+	Hello                MessageType = 1
+	RootRequest          MessageType = 2
+	DatumRequest         MessageType = 3
+	NatTraversalRequest  MessageType = 4
 	NatTraversalRequest2 MessageType = 5
-	Ok           MessageType = 128
-	Error        MessageType = 129
-	HelloReply   MessageType = 130
-	RootReply    MessageType = 131
-	Datum        MessageType = 132
-	NoDatum      MessageType = 133
+	Ok                   MessageType = 128
+	Error                MessageType = 129
+	HelloReply           MessageType = 130
+	RootReply            MessageType = 131
+	Datum                MessageType = 132
+	NoDatum              MessageType = 133
 )
 
 const (
@@ -190,6 +190,16 @@ func createBytesNotSigned(id uint32, typ MessageType, body []byte) []byte {
 	return data
 }
 
+func signedMessage(message []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
+
+	signature, err := computeSignature(message, privateKey)
+	if err != nil {
+		return nil, err
+	}
+	message = append(message, signature...)
+	return message, nil
+}
+
 func createHelloBytes(id uint32, typ MessageType, extensions []byte, name []byte, privateKey *ecdsa.PrivateKey) ([]byte, error) {
 	body := make([]byte, 0)
 	body = append(body, extensions...)
@@ -262,10 +272,11 @@ func computeSignature(data []byte, privateKey *ecdsa.PrivateKey) ([]byte, error)
 	return signature, err
 }
 
-func verifySignedMessage(sendMessage Message, receivedMessage Message, senderPublicKey *ecdsa.PublicKey) bool {
-	// if sendMessage.ID != receivedMessage.ID {
-	// 	return false
-	// }
+func verifySignedMessage(receivedMessage Message, senderPublicKey *ecdsa.PublicKey, checkID bool) bool {
+
+	if checkID && receivedMessage.ID != 42 {
+		return false
+	}
 
 	payload := getMessageWithoutSignature(receivedMessage)
 	fmt.Printf("[verifySignedMessage] Payload: %x\n", payload)
@@ -274,16 +285,16 @@ func verifySignedMessage(sendMessage Message, receivedMessage Message, senderPub
 	return verifySignature(senderPublicKey, payload, receivedMessage.Signature)
 }
 
-func verifyDatum(sendMessage Message, receivedMessage Message) bool {
+func verifyDatum(receivedMessage Message) bool {
 
 	// if !verifySignedMessage(sendMessage, receivedMessage, senderPublicKey) {
 	// 	return false
 	// }
 
 	// TODO check id's and hashes
-	if getHash(sendMessage) != getHash(receivedMessage) {
-		return false
-	}
+	// if getHash(sendMessage) != getHash(receivedMessage) {
+	// 	return false
+	// }
 
 	data := getValue(receivedMessage)
 	hash := sha256.Sum256(data)
@@ -370,23 +381,23 @@ func readFromFile(filename string) ([]byte, error) {
 }
 
 func udpAddrToBytes(addr *net.UDPAddr) []byte {
-    ip := addr.IP.To4()
-    b := make([]byte, 6)
-    copy(b[0:4], ip.To4())
-    binary.BigEndian.PutUint16(b[4:6], uint16(addr.Port))
-    return b
+	ip := addr.IP.To4()
+	b := make([]byte, 6)
+	copy(b[0:4], ip.To4())
+	binary.BigEndian.PutUint16(b[4:6], uint16(addr.Port))
+	return b
 }
 
 func bytesToUDPAddr(b []byte) (*net.UDPAddr, error) {
-    if len(b) < 6 {
-        return nil, fmt.Errorf("invalid byte slice length")
-    }
+	if len(b) < 6 {
+		return nil, fmt.Errorf("invalid byte slice length")
+	}
 
-    ip := net.IPv4(b[0], b[1], b[2], b[3])
-    port := binary.BigEndian.Uint16(b[4:6])
+	ip := net.IPv4(b[0], b[1], b[2], b[3])
+	port := binary.BigEndian.Uint16(b[4:6])
 
-    return &net.UDPAddr{
-        IP:   ip,
-        Port: int(port),
-    }, nil
+	return &net.UDPAddr{
+		IP:   ip,
+		Port: int(port),
+	}, nil
 }

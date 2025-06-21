@@ -228,7 +228,8 @@ func flattenBigDirectory(node *Node) (*Folder, error) {
 				fmt.Printf("Error building filesystem for directory %s: %v\n", child.Name, err)
 				return nil, err
 			}
-			dir.Directories = append(dir.Directories, subDir)
+			dir.Directories = append(dir.Directories, subDir.Directories...)
+			dir.Files = append(dir.Files, subDir.Files...)
 		default:
 		}
 	}

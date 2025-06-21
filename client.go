@@ -360,12 +360,13 @@ func userInterface(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCo
 // MAIN.
 
 func main() {
-	if len(os.Args) != 3 {
-		fmt.Println("usage: ", os.Args[0]+" <name> <port>")
+	if len(os.Args) != 4 {
+		fmt.Println("usage: ", os.Args[0]+" <name> <port> <path>")
 		os.Exit(1)
 	}
 	name := os.Args[1]
 	portStr := os.Args[2]
+	path := os.Args[3]
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 1 || port > 65535 {
 		log.Fatal("Invalid port number:", portStr)
@@ -421,6 +422,13 @@ func main() {
 	}
 	defer conn.Close()
 	fmt.Println("Listening on", addr.String())
+
+	chunkToHash := make(map[[32]byte][]byte)
+	rootHash, err := createFileSystemHash(path, chunkToHash)
+	if err != nil {
+		fmt.Printf("Error creating file system hash: %v\n", err)
+		os.Exit(1)
+	}
 
 	peersMap := make(map[string]*PeerInfo) // It is used only by main thread, so it does not have to be thread-safe.
 
@@ -496,11 +504,6 @@ func main() {
 				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{okBytes, peerAddr})
 			case NatTraversalRequest2:
 
-				if !verifySignedMessage(message, cryptoKeys.PublicKey, false) {
-					fmt.Println("Signature verification failed.")
-					continue
-				}
-
 				fmt.Printf("NatTraversalRequest2")
 				okBytes := createBytesNotSigned(message.ID, Ok, make([]byte, 0))
 				pingBytes := createBytesNotSigned(message.ID, Ping, make([]byte, 0))
@@ -518,7 +521,13 @@ func main() {
 			case Error:
 				fmt.Println("Received Error from ", peerAddr.String(), ": ", string(message.Body))
 			case RootRequest:
-				// TODO - analogicznie do obsługi Hello
+
+				messageBytes, err := signedMessage(createBytesNotSigned(message.ID, RootReply, rootHash[:]), cryptoKeys.PrivateKey)
+				if err != nil {
+					fmt.Println("Error creating RootReply:", err)
+					continue
+				}
+				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{messageBytes, peerAddr})
 			case RootReply:
 				peerInfo, ok := peersMap[peerAddr.String()]
 				if ok {
@@ -529,7 +538,18 @@ func main() {
 					}(peerInfo, message)
 				}
 			case DatumRequest:
-				// TODO - wisienka na torcie, wysyłanie w kawałkach itp.
+				hash := getHash(message)
+				chunkBytes := chunkToHash[hash]
+				bodyBytes := append(hash[:], chunkBytes...)
+				messageBytes, err := signedMessage(createBytesNotSigned(message.ID, Datum, bodyBytes), cryptoKeys.PrivateKey)
+
+				if err != nil {
+					fmt.Println("Error creating signed message:", err)
+					continue
+				}
+
+				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{messageBytes, peerAddr})
+
 			case Datum, NoDatum:
 				// TODO sprawdzanie podpisów i poprawności hasha. Tworzenie na bieżąco Merkle Tree (na razie po prostu wyświetlam wszytko).
 				peerInfo, ok := peersMap[peerAddr.String()]

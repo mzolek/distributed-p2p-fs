@@ -111,6 +111,7 @@ func getMessageWithoutSignature(message Message) []byte {
 
 func parseMessage(data []byte) (Message, error) {
 	// TODO if message type is Datum check if correct format
+	// TODO !!!!!
 	if len(data) < HeaderLength {
 		return Message{}, errors.New("Message too short.")
 	}

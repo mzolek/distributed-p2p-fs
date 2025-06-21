@@ -307,18 +307,20 @@ rootLoop:
 
 			if message.Type == NoDatum {
 				if !verifySignedMessage(message, message, peerPublicKey) {
+					delete(needed, getHash(message))
 					continue
 				}
 			}
 
-			// if message was NoDatum then we don't need to process it.
 			fmt.Print("HERE\n")
+
 			_, ok := needed[getHash(message)]
-			if ok && message.Type == Datum {
+			if ok && verifyDatum(message, message) {
+				fmt.Print("CORRECT\n")
+
 				processNode(message, hashToNodeMap, needed)
+				delete(needed, getHash(message))
 			}
-			// Datum or NoDatum we can remove it from needed.
-			delete(needed, getHash(message))
 		}
 	}
 

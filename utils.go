@@ -92,7 +92,13 @@ func getDatumType(message Message) byte {
 }
 
 func getDatumValue(message Message) []byte {
+	// TODO what about additional bytes after the end of message?
 	return message.Body[33:]
+}
+
+func getValue(message Message) []byte {
+	// TODO what about additional bytes after the end of message?
+	return message.Body[32:]
 }
 
 func getMessageWithoutSignature(message Message) []byte {
@@ -265,19 +271,21 @@ func verifySignedMessage(sendMessage Message, receivedMessage Message, senderPub
 	return verifySignature(senderPublicKey, payload, receivedMessage.Signature)
 }
 
-func verifyDatum(sendMessage Message, receivedMessage Message, senderPublicKey *ecdsa.PublicKey) bool {
+func verifyDatum(sendMessage Message, receivedMessage Message) bool {
 
-	if !verifySignedMessage(sendMessage, receivedMessage, senderPublicKey) {
-		return false
-	}
+	// if !verifySignedMessage(sendMessage, receivedMessage, senderPublicKey) {
+	// 	return false
+	// }
 
+	// TODO check id's and hashes
 	if getHash(sendMessage) != getHash(receivedMessage) {
 		return false
 	}
 
-	data := getDatumValue(receivedMessage)
+	data := getValue(receivedMessage)
 	hash := sha256.Sum256(data)
-	return hash != getHash(receivedMessage)
+	fmt.Printf("[verifyDatum] Hash: %t\n", hash == getHash(receivedMessage))
+	return hash == getHash(receivedMessage)
 }
 
 func verifySignature(publicKey *ecdsa.PublicKey, data []byte, signature []byte) bool {

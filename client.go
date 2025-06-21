@@ -8,7 +8,6 @@ import (
 	"log"
 	"slices"
 	"sync"
-
 	//"crypto/ecdsa"
 	"fmt"
 	"io"
@@ -160,7 +159,7 @@ func respondToHello(writeChan chan NetInfo, peerName string, peerAddr *net.UDPAd
 }
 
 func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommChan chan string,
-	peerName string, name string, cryptoKeys CryptoKeys) {
+	peerName string, name string, cryptoKeys CryptoKeys, myAddr *net.UDPAddr, init bool) {
 	allPeers := getPeers()
 	if !slices.Contains(allPeers, peerName) { // Check if this peer exists.
 		fmt.Println("Peer", peerName, "does not exist.")
@@ -204,8 +203,17 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 	isUnique := <-isUniqueChan
 
 	if !isUnique {
-		fmt.Println("Communcation with", peerName, "is already being handled. Please be patient.")
+		fmt.Println("Communication with", peerName, "is already being handled. Please be patient.")
 		return
+	}
+
+	// NAT traversal
+	if peerName != ServerName {
+		serverAddrs := getAddressesOfPeer(ServerName)
+		serverAddr, _ := net.ResolveUDPAddr("udp", serverAddrs[0])
+		natBytes := createBytesNotSigned(42, NatTraversalRequest, udpAddrToBytes(peerAddr)) // myAddr też nie działa
+		writeChan <- NetInfo{natBytes, serverAddr}
+		fmt.Printf("NatTraversalRequest")
 	}
 
 	helloTicker := time.NewTicker(2 * time.Second)
@@ -220,6 +228,11 @@ helloLoop:
 			fmt.Println("Got HelloReply from", peerName)
 			break helloLoop
 		}
+	}
+
+	if init { // Init = true means we don't want to talk now, just hello server when starting program.
+		finishCommChan <- peerAddr.String()
+		return
 	}
 
 	rootRequestBytes := createBytesNotSigned(rand.Uint32(), RootRequest, make([]byte, 32))
@@ -326,12 +339,12 @@ rootLoop:
 
 }
 
-func userInterface(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommChan chan string, name string, cryptoKeys CryptoKeys) {
+func userInterface(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommChan chan string, name string, cryptoKeys CryptoKeys, myAddr *net.UDPAddr) {
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		peerName := scanner.Text()
 		fmt.Println("User wants to talk to:", peerName)
-		go talkToPeer(writeChan, peerInfoChan, finishCommChan, peerName, name, cryptoKeys)
+		go talkToPeer(writeChan, peerInfoChan, finishCommChan, peerName, name, cryptoKeys, myAddr, false)
 	}
 }
 
@@ -384,12 +397,9 @@ func main() {
 		registerPeer(name, formatPublicKey(cryptoKeys.PublicKey))
 	}
 
-	if len(addresses) == 0 {
-		// TODO hello
-	}
-
 	names = getPeers()
 	fmt.Println("All peers after registration by HTTPS ", names)
+	serverAddr, _ := net.ResolveUDPAddr("udp", getAddressesOfPeer(ServerName)[0])
 
 	addr := net.UDPAddr{
 		IP:   net.ParseIP("0.0.0.0"),
@@ -412,10 +422,16 @@ func main() {
 
 	go reader(conn, readChan)
 	go writer(conn, writeChan)
-	go userInterface(writeChan, peerInfoChan, finishCommChan, name, cryptoKeys)
+	go talkToPeer(writeChan, peerInfoChan, finishCommChan, ServerName, name, cryptoKeys, &addr, true) // Hello to server.
+	go userInterface(writeChan, peerInfoChan, finishCommChan, name, cryptoKeys, &addr)
+
+	pingTicker := time.NewTicker(60 * time.Second)
 
 	for {
 		select {
+		case <-pingTicker.C: // Ping server every minute.
+			pingBytes := createBytesNotSigned(42, Ping, make([]byte, 0))
+			go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{pingBytes, serverAddr})
 		case peerInfo := <-peerInfoChan:
 			_, ok := peersMap[peerInfo.Addr.String()]
 			if ok {
@@ -469,6 +485,19 @@ func main() {
 			case Ping:
 				okBytes := createBytesNotSigned(message.ID, Ok, make([]byte, 0))
 				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{okBytes, peerAddr})
+			case NatTraversalRequest2:
+				fmt.Printf("NatTraversalRequest2")
+				okBytes := createBytesNotSigned(message.ID, Ok, make([]byte, 0))
+				pingBytes := createBytesNotSigned(message.ID, Ping, make([]byte, 0))
+				truePeerAddr, err := bytesToUDPAddr(message.Body)
+				if err != nil {
+					fmt.Println("Error:", err)
+				} else {
+					go func(netInfoOk NetInfo, netInfoPing NetInfo) {
+						writeChan <- netInfoOk
+						writeChan <- netInfoPing
+					}(NetInfo{okBytes, peerAddr}, NetInfo{pingBytes, truePeerAddr})
+				}
 			case Ok:
 				// Do nothing?
 			case Error:

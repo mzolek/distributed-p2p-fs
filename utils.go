@@ -14,6 +14,7 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"net"
 )
 
 type CryptoKeys struct {
@@ -28,6 +29,8 @@ const (
 	Hello        MessageType = 1
 	RootRequest  MessageType = 2
 	DatumRequest MessageType = 3
+	NatTraversalRequest MessageType = 4
+	NatTraversalRequest2 MessageType = 5
 	Ok           MessageType = 128
 	Error        MessageType = 129
 	HelloReply   MessageType = 130
@@ -364,4 +367,26 @@ func readFromFile(filename string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+func udpAddrToBytes(addr *net.UDPAddr) []byte {
+    ip := addr.IP.To4()
+    b := make([]byte, 6)
+    copy(b[0:4], ip.To4())
+    binary.BigEndian.PutUint16(b[4:6], uint16(addr.Port))
+    return b
+}
+
+func bytesToUDPAddr(b []byte) (*net.UDPAddr, error) {
+    if len(b) < 6 {
+        return nil, fmt.Errorf("invalid byte slice length")
+    }
+
+    ip := net.IPv4(b[0], b[1], b[2], b[3])
+    port := binary.BigEndian.Uint16(b[4:6])
+
+    return &net.UDPAddr{
+        IP:   ip,
+        Port: int(port),
+    }, nil
 }

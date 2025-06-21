@@ -274,7 +274,13 @@ func computeSignature(data []byte, privateKey *ecdsa.PrivateKey) ([]byte, error)
 
 func verifySignedMessage(receivedMessage Message, senderPublicKey *ecdsa.PublicKey, checkID bool) bool {
 
+	if !receivedMessage.Signed {
+		fmt.Println("[verifySignedMessage] Message is not signed.")
+		return false
+	}
+
 	if checkID && receivedMessage.ID != 42 {
+		fmt.Printf("[verifySignedMessage] Invalid ID: %d, expected 42.\n", receivedMessage.ID)
 		return false
 	}
 
@@ -282,6 +288,8 @@ func verifySignedMessage(receivedMessage Message, senderPublicKey *ecdsa.PublicK
 	fmt.Printf("[verifySignedMessage] Payload: %x\n", payload)
 	printMessage(receivedMessage, "Received Message")
 
+	result := verifySignature(senderPublicKey, payload, receivedMessage.Signature)
+	fmt.Printf("[verifySignedMessage] Signature valid: %t\n", result)
 	return verifySignature(senderPublicKey, payload, receivedMessage.Signature)
 }
 

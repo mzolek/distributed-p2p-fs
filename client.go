@@ -26,6 +26,7 @@ import (
 const ServerURL = "https://galene.org:8448"
 const ServerName = "galene.org"
 const ServerPort = 8448
+const MessageID = 42
 
 const SECRETS_FILES = ".keys"
 
@@ -186,7 +187,7 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 	}
 	fmt.Println(peerName, "has address:", peerAddr.String())
 
-	helloBytes, err := createHelloBytes(rand.Uint32(), Hello, make([]byte, 4), []byte(name), cryptoKeys.PrivateKey)
+	helloBytes, err := createHelloBytes(MessageID, Hello, make([]byte, 4), []byte(name), cryptoKeys.PrivateKey)
 	if err != nil {
 		fmt.Println("Can't create Hello to peer", peerName)
 		return
@@ -212,7 +213,9 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 	if peerName != ServerName {
 		serverAddrs := getAddressesOfPeer(ServerName)
 		serverAddr, _ := net.ResolveUDPAddr("udp", serverAddrs[0])
-		natBytes, err := signedMessage(createBytesNotSigned(42, NatTraversalRequest, udpAddrToBytes(peerAddr)), cryptoKeys.PrivateKey) // myAddr też nie działa
+		natBytes, err := signedMessage(createBytesNotSigned(MessageID, NatTraversalRequest, udpAddrToBytes(peerAddr)), cryptoKeys.PrivateKey) // myAddr też nie działa
+
+		fmt.Printf("Sending NatTraversalRequest to %x\n", natBytes)
 		if err != nil {
 			fmt.Println("Error creating NatTraversalRequest:", err)
 			finishCommChan <- peerAddr.String()
@@ -241,7 +244,7 @@ helloLoop:
 		return
 	}
 
-	rootRequestBytes := createBytesNotSigned(rand.Uint32(), RootRequest, make([]byte, 32))
+	rootRequestBytes := createBytesNotSigned(MessageID, RootRequest, make([]byte, 32))
 
 	rootTicker := time.NewTicker(1 * time.Second)
 	var rootHash []byte
@@ -285,7 +288,7 @@ rootLoop:
 		case <-datumTicker.C:
 			if len(needed) > 0 {
 				for hash, _ := range needed {
-					datumRequestBytes := createBytesNotSigned(rand.Uint32(), DatumRequest, hash[:])
+					datumRequestBytes := createBytesNotSigned(MessageID, DatumRequest, hash[:])
 					writeChan <- NetInfo{datumRequestBytes, peerAddr}
 					break
 				}

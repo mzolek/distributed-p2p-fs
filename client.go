@@ -215,14 +215,14 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 		serverAddr, _ := net.ResolveUDPAddr("udp", serverAddrs[0])
 		natBytes, err := signedMessage(createBytesNotSigned(MessageID, NatTraversalRequest, udpAddrToBytes(peerAddr)), cryptoKeys.PrivateKey) // myAddr też nie działa
 
-		fmt.Printf("Sending NatTraversalRequest to %x\n", natBytes)
+		//fmt.Printf("Sending NatTraversalRequest to %x\n", natBytes)
 		if err != nil {
 			fmt.Println("Error creating NatTraversalRequest:", err)
 			finishCommChan <- peerAddr.String()
 			return
 		}
 		writeChan <- NetInfo{natBytes, serverAddr}
-		fmt.Printf("NatTraversalRequest")
+		//fmt.Printf("NatTraversalRequest")
 	}
 
 	helloTicker := time.NewTicker(2 * time.Second)
@@ -280,7 +280,7 @@ rootLoop:
 	hashToNodeMap := make(map[[32]byte]*Node) // map of hashes to nodes, used to build Merkle Tree.
 	hashToNodeMap[[32]byte(rootHash)] = root
 
-	datumTicker := time.NewTicker(100 * time.Millisecond)
+	datumTicker := time.NewTicker(10 * time.Millisecond)
 
 downloadLoop:
 	for {
@@ -329,11 +329,11 @@ downloadLoop:
 				continue
 			}
 
-			fmt.Print("HERE\n")
+			//fmt.Print("HERE\n")
 
 			_, ok := needed[getHash(message)]
 			if ok && verifyDatum(message) {
-				fmt.Print("CORRECT\n")
+				//fmt.Print("CORRECT\n")
 
 				processNode(message, hashToNodeMap, needed)
 				delete(needed, getHash(message))
@@ -481,7 +481,7 @@ func main() {
 				}
 			}(peerInfo)
 
-			fmt.Println("Communication finished with", peerInfo.Name)
+			//fmt.Println("Communication finished with", peerInfo.Name)
 		case netInfo := <-readChan:
 			message, err := parseMessage(netInfo.Bytes)
 			peerAddr := netInfo.Addr
@@ -510,7 +510,7 @@ func main() {
 				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{okBytes, peerAddr})
 			case NatTraversalRequest2:
 
-				fmt.Printf("NatTraversalRequest2")
+				//fmt.Printf("NatTraversalRequest2")
 				okBytes := createBytesNotSigned(message.ID, Ok, make([]byte, 0))
 				pingBytes := createBytesNotSigned(message.ID, Ping, make([]byte, 0))
 				truePeerAddr, err := bytesToUDPAddr(message.Body)

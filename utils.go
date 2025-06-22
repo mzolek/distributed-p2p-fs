@@ -287,7 +287,7 @@ func verifySignedMessage(receivedMessage Message, senderPublicKey *ecdsa.PublicK
 
 	payload := getMessageWithoutSignature(receivedMessage)
 	fmt.Printf("[verifySignedMessage] Payload: %x\n", payload)
-	printMessage(receivedMessage, "Received Message")
+	//printMessage(receivedMessage, "Received Message")
 
 	result := verifySignature(senderPublicKey, payload, receivedMessage.Signature)
 	fmt.Printf("[verifySignedMessage] Signature valid: %t\n", result)

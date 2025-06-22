@@ -279,7 +279,7 @@ rootLoop:
 	needed[[32]byte(rootHash)] = struct{}{}
 
 	// filesSystemGuard := newNode([]byte{}, Directory, nil, "")
-	root := newNode(rootHash, 0, nil, "main")
+	root := newNode(rootHash, 0, nil, "main_"+peerName)
 	// filesSystemGuard.AddChild(root)
 
 	hashToNodeMap := make(map[[32]byte]*Node) // map of hashes to nodes, used to build Merkle Tree.

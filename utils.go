@@ -62,22 +62,6 @@ func failOnErr(err error) {
 	}
 }
 
-func printMessage(message Message, name string) {
-	fmt.Println("Message: ", name)
-	fmt.Println("-------------------------------")
-	fmt.Println("ID: ", message.ID)
-	fmt.Println("Type: ", message.Type)
-	fmt.Println("Length: ", message.Length)
-	fmt.Println("Body: ", string(message.Body))
-	if message.Signed {
-		fmt.Println("Signature: ", fmt.Sprintf("%x", message.Signature))
-	} else {
-		fmt.Println("Signature: Not signed")
-	}
-	fmt.Println("-------------------------------")
-	fmt.Println()
-}
-
 func getExtensions(message Message) []byte {
 	return message.Body[:4]
 }
@@ -94,13 +78,7 @@ func getDatumType(message Message) byte {
 	return message.Body[32]
 }
 
-func getDatumValue(message Message) []byte {
-	// TODO what about additional bytes after the end of message?
-	return message.Body[33:]
-}
-
 func getValue(message Message) []byte {
-	// TODO what about additional bytes after the end of message?
 	return message.Body[32:]
 }
 
@@ -110,8 +88,6 @@ func getMessageWithoutSignature(message Message) []byte {
 }
 
 func parseMessage(data []byte) (Message, error) {
-	// TODO if message type is Datum check if correct format
-	// TODO !!!!!
 	if len(data) < HeaderLength {
 		return Message{}, errors.New("Message too short.")
 	}
@@ -134,7 +110,7 @@ func parseMessage(data []byte) (Message, error) {
 	var signed bool
 	var signature []byte
 
-	if typ == Hello || typ == HelloReply || typ == RootReply || typ == NoDatum { // || typ == Datum {
+	if typ == Hello || typ == HelloReply || typ == RootReply || typ == NoDatum || typ == NatTraversalRequest { // || typ == Datum {
 		if bodyEnd+64 > len(data) {
 			return Message{}, errors.New("Missing signature.")
 		}
@@ -144,6 +120,18 @@ func parseMessage(data []byte) (Message, error) {
 	} else {
 		signed = false
 		signature = nil
+	}
+
+	if (typ == NatTraversalRequest2 || typ == NatTraversalRequest) && !(length == 6 || length == 18) {
+		return Message{}, errors.New("Invalid NatTraversalRequest length.")
+	}
+
+	if (typ == DatumRequest || typ == RootReply || typ == RootRequest || typ == NoDatum) && length < 32 {
+		return Message{}, errors.New("Invalid DatumRequest Hash too short.")
+	}
+
+	if typ == Datum && length < 33 {
+		return Message{}, errors.New("Invalid Datum Value filed too short.")
 	}
 
 	message := Message{
@@ -167,7 +155,6 @@ func messageToBytes(message Message) []byte {
 	binary.BigEndian.PutUint16(header[5:7], length)
 
 	data := make([]byte, 0)
-	// TODO don't append use Buffer?
 	data = append(data, header...)
 	data = append(data, message.Body...)
 
@@ -226,13 +213,6 @@ func createHelloBytes(id uint32, typ MessageType, extensions []byte, name []byte
 	return data, nil
 }
 
-func checkHelloReplyMessage(message Message, id uint32, name string) bool {
-	if message.Type == HelloReply && message.ID == id && message.Length >= 4 && string(message.Body[4:]) == name {
-		return true
-	}
-	return false
-}
-
 // KEYS, SIGNATURES, ETC.
 
 // Generates new random private key and generates public key from it.
@@ -286,28 +266,21 @@ func verifySignedMessage(receivedMessage Message, senderPublicKey *ecdsa.PublicK
 	}
 
 	payload := getMessageWithoutSignature(receivedMessage)
-	fmt.Printf("[verifySignedMessage] Payload: %x\n", payload)
-	//printMessage(receivedMessage, "Received Message")
 
 	result := verifySignature(senderPublicKey, payload, receivedMessage.Signature)
-	fmt.Printf("[verifySignedMessage] Signature valid: %t\n", result)
-	return verifySignature(senderPublicKey, payload, receivedMessage.Signature)
+	if !result {
+		fmt.Println("[verifySignedMessage] Signature verification failed.")
+	}
+	return result
 }
 
 func verifyDatum(receivedMessage Message) bool {
-
-	// if !verifySignedMessage(sendMessage, receivedMessage, senderPublicKey) {
-	// 	return false
-	// }
-
-	// TODO check id's and hashes
-	// if getHash(sendMessage) != getHash(receivedMessage) {
-	// 	return false
-	// }
-
 	data := getValue(receivedMessage)
 	hash := sha256.Sum256(data)
-	fmt.Printf("[verifyDatum] Hash: %t\n", hash == getHash(receivedMessage))
+	result := hash == getHash(receivedMessage)
+	if !result {
+		fmt.Println("[verifyDatum] Hash verification failed.")
+	}
 	return hash == getHash(receivedMessage)
 }
 
@@ -372,7 +345,7 @@ func readFromFile(filename string) ([]byte, error) {
 	defer file.Close()
 
 	data := make([]byte, 0)
-	buf := make([]byte, 4096) // Read in chunks of 4096 bytes.
+	buf := make([]byte, 4096)
 	for {
 		n, err := file.Read(buf)
 		if n > 0 {
@@ -389,6 +362,7 @@ func readFromFile(filename string) ([]byte, error) {
 	return data, nil
 }
 
+// TODO add IPv6 support
 func udpAddrToBytes(addr *net.UDPAddr) []byte {
 	ip := addr.IP.To4()
 	b := make([]byte, 6)

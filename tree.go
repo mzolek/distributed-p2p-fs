@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 )
 
@@ -63,7 +64,8 @@ func (folder *Folder) String() string {
 func processNode(message Message, hashToNodeMap map[[32]byte]*Node, needed map[[32]byte]struct{}) {
 	node := hashToNodeMap[getHash(message)]
 	datumType := getDatumType(message)
-	data := getDatumValue(message)
+	data := getValue(message)
+	data = data[1:]
 
 	node.Type = datumType
 
@@ -134,7 +136,7 @@ func saveFileSystem(folder *Folder, basePath string) {
 		return
 	}
 
-	if err := os.MkdirAll(currentPath, 0755); err != nil && !os.IsExist(err) {
+	if err := os.MkdirAll(path.Dir(currentPath), 0755); err != nil && !os.IsExist(err) {
 		fmt.Printf("error creating directory %s: %v\n", currentPath, err)
 		return
 	}
@@ -142,6 +144,13 @@ func saveFileSystem(folder *Folder, basePath string) {
 	for _, file := range folder.Files {
 		// Join path safely
 		filePath := filepath.Join(currentPath, file.Name)
+		_, err := os.Create(filePath)
+		fmt.Printf("Is path filePath valid %t: \n", fs.ValidPath(filePath))
+		fmt.Printf("Creating file: '%s'\n", filePath)
+		if err != nil {
+			fmt.Printf("error creating file %s: %v\n", filePath, err)
+			continue
+		}
 		if err := os.WriteFile(filePath, file.Data, 0644); err != nil {
 			fmt.Printf("error writing file %s: %v\n", filePath, err)
 		}
@@ -306,9 +315,9 @@ func fileToHash(path string, chunkToHash map[[32]byte][]byte) ([32]byte, error) 
 		return [32]byte{}, fmt.Errorf("error reading file %s: %v", path, err)
 	}
 
-	fmt.Printf("Processing file: %s\n", path)
-	fmt.Printf("File content (as bytes): %x\n", fileBytes)
-	fmt.Printf("File content (as string): %s", fileBytes)
+	// fmt.Printf("Processing file: %s\n", path)
+	// fmt.Printf("File content (as bytes): %x\n", fileBytes)
+	// fmt.Printf("File content (as string): %s", fileBytes)
 
 	chunkList := make([]byte, 0)
 	chunkListTmp := make([]byte, 0)
@@ -318,7 +327,6 @@ func fileToHash(path string, chunkToHash map[[32]byte][]byte) ([32]byte, error) 
 		chunk := []byte{byte(Chunk)}
 		chunkHash := sha256.Sum256(chunk)
 		chunkToHash[chunkHash] = chunk
-		fmt.Printf("Empty file hash: %x\n\n", chunkHash)
 		return chunkHash, nil
 	}
 
@@ -353,7 +361,7 @@ func fileToHash(path string, chunkToHash map[[32]byte][]byte) ([32]byte, error) 
 		chunkList = append(chunkList, chunkListTmp...)
 		chunkListTmp = make([]byte, 0)
 	}
-	fmt.Printf("File hash: %x\n\n", chunkList[:32])
+	// fmt.Printf("File hash: %x\n\n", chunkList[:32])
 
 	return [32]byte(chunkList[:32]), nil
 }
@@ -394,7 +402,6 @@ func DirToHash(path string, chunkToHash map[[32]byte][]byte) ([32]byte, error) {
 		chunk := []byte{byte(Directory)}
 		chunkHash := sha256.Sum256(chunk)
 		chunkToHash[chunkHash] = chunk
-		fmt.Printf("Empty directory hash: %x\n\n", chunkHash)
 		return chunkHash, nil
 	}
 
@@ -434,7 +441,7 @@ func DirToHash(path string, chunkToHash map[[32]byte][]byte) ([32]byte, error) {
 		chunkList = append(chunkList, chunkListTmp...)
 		chunkListTmp = make([]byte, 0)
 	}
-	fmt.Printf("Dir hash: %x\n\n", chunkList[:32])
+	// fmt.Printf("Dir hash: %x\n\n", chunkList[:32])
 
 	return [32]byte(chunkList[:32]), nil
 }
@@ -527,22 +534,3 @@ func printDebugInfo(hash [32]byte, chunkToHash map[[32]byte][]byte, indent strin
 		}
 	}
 }
-
-// func main() {
-// 	if len(os.Args) < 2 {
-// 		fmt.Println("Usage: go run main.go <path>")
-// 		os.Exit(1)
-// 	}
-
-// 	path := os.Args[1]
-// 	chunkToHash := make(map[[32]byte][]byte)
-
-// 	hash, err := createFileSystemHash(path, chunkToHash)
-// 	if err != nil {
-// 		fmt.Printf("Error creating file system hash: %v\n", err)
-// 		os.Exit(1)
-// 	}
-// 	fmt.Printf("File system hash for %s: %x\n", path, hash)
-
-// 	printDebugInfo(hash, chunkToHash, "")
-// }

@@ -35,7 +35,7 @@ type PeerInfo struct {
 	Addr         *net.UDPAddr
 	Wg           sync.WaitGroup
 	IsUniqueChan chan bool
-	HelloChan    chan struct{}
+	HelloChan    chan Message
 	RootChan     chan Message
 	// SendHashChan chan []byte
 	recvDatum chan Message
@@ -195,7 +195,7 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 
 	// main ->
 	isUniqueChan := make(chan bool)
-	helloChan := make(chan struct{})
+	helloChan := make(chan Message)
 	rootChan := make(chan Message)
 	recvDatum := make(chan Message)
 	// sendHashChan := make(chan []byte)
@@ -215,14 +215,14 @@ func talkToPeer(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommC
 		serverAddr, _ := net.ResolveUDPAddr("udp", serverAddrs[0])
 		natBytes, err := signedMessage(createBytesNotSigned(MessageID, NatTraversalRequest, udpAddrToBytes(peerAddr)), cryptoKeys.PrivateKey) // myAddr też nie działa
 
-		//fmt.Printf("Sending NatTraversalRequest to %x\n", natBytes)
+		fmt.Printf("Sending NatTraversalRequest to %x\n", natBytes)
 		if err != nil {
 			fmt.Println("Error creating NatTraversalRequest:", err)
 			finishCommChan <- peerAddr.String()
 			return
 		}
 		writeChan <- NetInfo{natBytes, serverAddr}
-		//fmt.Printf("NatTraversalRequest")
+		fmt.Printf("NatTraversalRequest")
 	}
 
 	helloTicker := time.NewTicker(2 * time.Second)
@@ -232,7 +232,12 @@ helloLoop:
 		case <-helloTicker.C:
 			fmt.Println("Sending Hello to", peerName)
 			writeChan <- NetInfo{helloBytes, peerAddr}
-		case <-helloChan:
+		case helloReplyMessage := <-helloChan:
+
+			if !verifySignedMessage(helloReplyMessage, peerPublicKey, true) {
+				fmt.Println("Received HelloReply from", peerName, "with incorrect signature.")
+				continue helloLoop
+			}
 			helloTicker.Stop()
 			fmt.Println("Got HelloReply from", peerName)
 			break helloLoop
@@ -258,7 +263,7 @@ rootLoop:
 
 			if !verifySignedMessage(rootMessage, peerPublicKey, true) {
 				fmt.Println("Received RootReply from", peerName, "with incorrect signature.")
-				return
+				continue rootLoop
 			}
 			rootHash = rootMessage.Body
 			rootTicker.Stop()
@@ -274,7 +279,7 @@ rootLoop:
 	needed[[32]byte(rootHash)] = struct{}{}
 
 	// filesSystemGuard := newNode([]byte{}, Directory, nil, "")
-	root := newNode(rootHash, 0, nil, "root")
+	root := newNode(rootHash, 0, nil, "main")
 	// filesSystemGuard.AddChild(root)
 
 	hashToNodeMap := make(map[[32]byte]*Node) // map of hashes to nodes, used to build Merkle Tree.
@@ -282,6 +287,7 @@ rootLoop:
 
 	datumTicker := time.NewTicker(10 * time.Millisecond)
 
+	counter := 0
 downloadLoop:
 	for {
 		select {
@@ -294,54 +300,43 @@ downloadLoop:
 					break
 				}
 			} else {
-				// TODO why do we stop here? When we have all data, we should add user file system traversal.
-				// We have all data. Cleaning.
 				datumTicker.Stop()
 				finishCommChan <- peerAddr.String()
+				println("All data received from", peerName)
 				break downloadLoop
-
-				// for i := 0; i < len(fileSystem.Directories[0].Files); i++ {
-				// 	printTextFile(fileSystem.Directories[0].Files[i])
-				// }
-				// for i := 0; i < len(fileSystem.Directories[1].Files); i++ {
-				// 	fmt.Println("File:", fileSystem.Directories[1].Files[i].Name)
-				// 	err = saveImageTooDisk(fileSystem.Directories[1].Files[i], "output_"+strconv.Itoa(i)+".jpeg")
-				// 	if err != nil {
-				// 		fmt.Println("Error saving file to disk:", err)
-				// 	}
-				// }
-
-				// // err = saveImageTooDisk(fileSystem.Directories[1].Files[1], "output.jpeg")
-				// // if err != nil {
-				// // 	fmt.Println("Error saving image to disk:", err)
-				// // }
-
-				// return
 			}
 
 		case message := <-recvDatum:
-			// fmt.Println("Received Datum with hash:", getHash(message))
 
 			if message.Type == NoDatum {
-				if !verifySignedMessage(message, peerPublicKey, true) {
+				signed := verifySignedMessage(message, peerPublicKey, true)
+				if signed {
 					delete(needed, getHash(message))
 				}
-				continue
+				fmt.Printf("Received NoDatum from %s with hash: %x, signed: %t\n", peerName, getHash(message), signed)
+				continue downloadLoop
 			}
-
-			//fmt.Print("HERE\n")
 
 			_, ok := needed[getHash(message)]
 			if ok && verifyDatum(message) {
-				//fmt.Print("CORRECT\n")
 
 				processNode(message, hashToNodeMap, needed)
 				delete(needed, getHash(message))
+				counter++
+				if counter%100 == 0 {
+					fmt.Printf("Received %d data chunks from %s\n", counter, peerName)
+				}
 			}
 		}
 	}
 
 	fileSystem, err := buildFileSystem(root)
+
+	// for _, dir := range fileSystem.Directories {
+	// 	fmt.Println("Directory:", dir.Name)
+	// 	saveFileSystem(dir, ".")
+	// }
+
 	if err != nil {
 		fmt.Println("Error building file system:", err)
 		return
@@ -350,8 +345,6 @@ downloadLoop:
 	printFileSystem(fileSystem, "")
 
 	saveFileSystem(fileSystem, ".")
-	return
-
 }
 
 func userInterface(writeChan chan NetInfo, peerInfoChan chan *PeerInfo, finishCommChan chan string, name string, cryptoKeys CryptoKeys, myAddr *net.UDPAddr) {
@@ -391,7 +384,6 @@ func main() {
 	fmt.Println("My addresses known by server before registraton by UDP: ", addresses)
 	cryptoKeys := CryptoKeys{}
 
-	// TODO implicitly register with server
 	if len(addresses) != 0 || isNameTaken {
 		fmt.Println("Trying loading keys from file.")
 		cryptoKeys, err = loadKeysFromFile(SECRETS_FILES)
@@ -487,7 +479,7 @@ func main() {
 			peerAddr := netInfo.Addr
 
 			if err != nil {
-				fmt.Println("Unknown message:", err)
+				fmt.Println("Error parsing message:", err)
 				continue
 			}
 
@@ -502,7 +494,7 @@ func main() {
 					peerInfo.Wg.Add(1)
 					go func(peerInfo *PeerInfo) {
 						defer peerInfo.Wg.Done()
-						peerInfo.HelloChan <- struct{}{} // Send through channel that we got HelloReply.
+						peerInfo.HelloChan <- message // Send through channel that we got HelloReply.
 					}(peerInfo)
 				}
 			case Ping:
@@ -515,7 +507,7 @@ func main() {
 				pingBytes := createBytesNotSigned(message.ID, Ping, make([]byte, 0))
 				truePeerAddr, err := bytesToUDPAddr(message.Body)
 				if err != nil {
-					fmt.Println("Error:", err)
+					fmt.Println("Error invalid address or port: ", err)
 				} else {
 					go func(netInfoOk NetInfo, netInfoPing NetInfo) {
 						writeChan <- netInfoOk
@@ -528,6 +520,7 @@ func main() {
 				fmt.Println("Received Error from ", peerAddr.String(), ": ", string(message.Body))
 			case RootRequest:
 
+				fmt.Printf("[RootRequest] Received from %s\n", peerAddr.String())
 				messageBytes, err := signedMessage(createBytesNotSigned(message.ID, RootReply, rootHash[:]), cryptoKeys.PrivateKey)
 				if err != nil {
 					fmt.Println("Error creating RootReply:", err)
@@ -544,6 +537,7 @@ func main() {
 					}(peerInfo, message)
 				}
 			case DatumRequest:
+				fmt.Println("Received DatumRequest from", peerAddr.String(), "with hash:", getHash(message))
 				hash := getHash(message)
 				chunkBytes := chunkToHash[hash]
 				bodyBytes := append(hash[:], chunkBytes...)
@@ -557,18 +551,10 @@ func main() {
 				go func(netInfo NetInfo) { writeChan <- netInfo }(NetInfo{messageBytes, peerAddr})
 
 			case Datum, NoDatum:
-				// TODO sprawdzanie podpisów i poprawności hasha. Tworzenie na bieżąco Merkle Tree (na razie po prostu wyświetlam wszytko).
 				peerInfo, ok := peersMap[peerAddr.String()]
 				if ok {
 					peerInfo.recvDatum <- message
 				}
-				// case NoDatum:
-				// 	fmt.Println("No datum with hash:", getHash(message))
-				// 	peerInfo, ok := peersMap[peerAddr.String()]
-				// 	if ok {
-				// 		// recvHash := getHash(message)
-				// 		peerInfo.recvDatum <- message
-				// 	}
 			}
 		}
 

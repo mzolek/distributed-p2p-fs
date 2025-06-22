@@ -3,11 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
-	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 )
 
@@ -78,7 +77,11 @@ func processNode(message Message, hashToNodeMap map[[32]byte]*Node, needed map[[
 			if i+64 > len(data) {
 				break
 			}
-			filename := string(data[i:(i + 32)])
+			len := bytes.IndexByte(data[i:(i+32)], 0)
+			if len == -1 {
+				len = 32
+			}
+			filename := string(data[i : i+len])
 			hash := [32]byte(data[(i + 32):(i + 64)])
 			child := newNode(hash[:], 0, nil, filename)
 			node.AddChild(child)
@@ -113,44 +116,32 @@ func printFileSystem(folder *Folder, indent string) {
 }
 
 func saveFileSystem(folder *Folder, basePath string) {
+	// fmt.Printf("DEBUG basePath: '%s'\n", basePath)
 
-	// absBasePath, err := filepath.Abs(basePath)
-	// fmt.Printf("DEBUG basePath: '%s', absBasePath: '%s'\n", basePath, absBasePath)
-	fmt.Printf("DEBUG basePath: '%s'\n", basePath)
-
-	// if err != nil {
-	// 	fmt.Printf("error getting absolute path: %v\n", err)
-	// 	return
-	// }
 	currentPath := filepath.Join(basePath, folder.Name)
 
-	fmt.Printf("Is path basePath valid %t: \n", fs.ValidPath(basePath))
-	// fmt.Printf("Is path absBasePath valid %t: \n", fs.ValidPath(absBasePath))
-	fmt.Printf("Is path currentPath valid: %t: \n", fs.ValidPath(currentPath))
-	fmt.Printf("Is path folder.Name valid: %t: \n", fs.ValidPath(folder.Name))
+	// fmt.Printf("Is path basePath valid %t: \n", fs.ValidPath(basePath))
+	// fmt.Printf("Is path currentPath valid: %t: \n", fs.ValidPath(currentPath))
+	// fmt.Printf("Is path folder.Name valid: %t: \n", fs.ValidPath(folder.Name))
+	// fmt.Printf("Creating folder: %q\n", folder.Name)
 
-	// fmt.Printf("DEBUG currentPath: %s, absolutePath: %s\n", currentPath, absBasePath)
-	fmt.Printf("Creating folder: '%s'\n", folder.Name)
 	if folder.Name == "" {
 		fmt.Println("error: folder name is empty")
 		return
 	}
 
-	if err := os.MkdirAll(path.Dir(currentPath), 0755); err != nil && !os.IsExist(err) {
+	// Create the FULL currentPath directory, not just its parent
+	if err := os.MkdirAll(currentPath, 0755); err != nil {
 		fmt.Printf("error creating directory %s: %v\n", currentPath, err)
 		return
 	}
 
 	for _, file := range folder.Files {
-		// Join path safely
 		filePath := filepath.Join(currentPath, file.Name)
-		_, err := os.Create(filePath)
-		fmt.Printf("Is path filePath valid %t: \n", fs.ValidPath(filePath))
-		fmt.Printf("Creating file: '%s'\n", filePath)
-		if err != nil {
-			fmt.Printf("error creating file %s: %v\n", filePath, err)
-			continue
-		}
+		// fmt.Printf("Is path filePath valid %t: \n", fs.ValidPath(filePath))
+		// fmt.Printf("Creating file: '%s'\n", filePath)
+
+		// Use WriteFile directly - it creates the file
 		if err := os.WriteFile(filePath, file.Data, 0644); err != nil {
 			fmt.Printf("error writing file %s: %v\n", filePath, err)
 		}
